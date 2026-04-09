@@ -176,6 +176,23 @@ func NewPathDestLocalKey(f bgp.Family, destPrefix string) *PathDestLocalKey {
 
 var localSource = &PeerInfo{}
 
+func NewLocalPeerInfo(global *oc.Global) *PeerInfo {
+	return &PeerInfo{
+		AS:      global.Config.As,
+		LocalID: global.Config.RouterId,
+	}
+}
+
+func NewDefaultRouteTargetPath(source *PeerInfo) *Path {
+	nlri := bgp.NewRouteTargetMembershipNLRI(0, nil)
+	mpreach, _ := bgp.NewPathAttributeMpReachNLRI(bgp.RF_RTC_UC, []bgp.PathNLRI{{NLRI: nlri}})
+	attrs := []bgp.PathAttributeInterface{
+		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
+		mpreach,
+	}
+	return NewPath(bgp.RF_RTC_UC, source, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+}
+
 func NewPath(family bgp.Family, source *PeerInfo, pathnlri bgp.PathNLRI, isWithdraw bool, pattrs []bgp.PathAttributeInterface, timestamp time.Time, noImplicitWithdraw bool) *Path {
 	if source == nil {
 		source = localSource

@@ -1041,10 +1041,12 @@ message UseMultiplePaths {
 
 message RouteTargetMembershipConfig {
   uint32 deferral_time = 1;
+  bool advertise_default = 2;
 }
 
 message RouteTargetMembershipState {
   uint32 deferral_time = 1;
+  bool advertise_default = 2;
 }
 
 message RouteTargetMembership {

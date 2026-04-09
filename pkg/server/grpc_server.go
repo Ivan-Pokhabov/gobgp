@@ -936,6 +936,7 @@ func readRouteTargetMembershipFromAPIStruct(c *oc.RouteTargetMembership, a *api.
 	}
 	if a.Config != nil {
 		c.Config.DeferralTime = uint16(a.Config.DeferralTime)
+		c.Config.AdvertiseDefault = a.Config.AdvertiseDefault
 	}
 }
 

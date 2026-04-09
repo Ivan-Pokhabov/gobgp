@@ -209,7 +209,11 @@ func isAfiSafiChanged(x, y []AfiSafi) bool {
 		m[string(e.Config.AfiSafiName)] = x[i]
 	}
 	for _, e := range y {
-		if v, ok := m[string(e.Config.AfiSafiName)]; !ok || !v.Config.Equal(&e.Config) || !v.AddPaths.Config.Equal(&e.AddPaths.Config) || !v.MpGracefulRestart.Config.Equal(&e.MpGracefulRestart.Config) {
+		if v, ok := m[string(e.Config.AfiSafiName)]; !ok ||
+			!v.Config.Equal(&e.Config) ||
+			!v.AddPaths.Config.Equal(&e.AddPaths.Config) ||
+			!v.MpGracefulRestart.Config.Equal(&e.MpGracefulRestart.Config) ||
+			!v.RouteTargetMembership.Config.Equal(&e.RouteTargetMembership.Config) {
 			return true
 		}
 	}
@@ -340,7 +344,8 @@ func newPrefixLimitFromConfigStruct(c *AfiSafi) *api.PrefixLimit {
 func newRouteTargetMembershipFromConfigStruct(c *RouteTargetMembership) *api.RouteTargetMembership {
 	return &api.RouteTargetMembership{
 		Config: &api.RouteTargetMembershipConfig{
-			DeferralTime: uint32(c.Config.DeferralTime),
+			DeferralTime:     uint32(c.Config.DeferralTime),
+			AdvertiseDefault: c.Config.AdvertiseDefault,
 		},
 	}
 }

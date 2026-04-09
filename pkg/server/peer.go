@@ -469,6 +469,19 @@ func (peer *peer) stopPeerRestarting() {
 	peer.longLivedRunning.Store(false)
 }
 
+func (peer *peer) isAdvertiseDefaultRTEnabled() bool {
+	if !peer.IsFamilyEnabled(bgp.RF_RTC_UC) {
+		return false
+	}
+	conf := peer.fsm.pConf.ReadOnly()
+	for _, afiSafi := range conf.AfiSafis {
+		if afiSafi.State.Family == bgp.RF_RTC_UC {
+			return afiSafi.RouteTargetMembership.Config.AdvertiseDefault
+		}
+	}
+	return false
+}
+
 // Returns true if the peer is interested in this path according to BGP RTC
 // (i.e., has advertised the relevant RT).
 func (peer *peer) interestedIn(path *table.Path) bool {

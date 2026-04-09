@@ -537,14 +537,52 @@ func filterpath(peer *peer, path, old *table.Path) *table.Path {
 	return path
 }
 
-func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*table.Path, *table.PolicyOptions, bool) {
-	// Special handling for RTM NLRI.
-	if path != nil && path.GetFamily() == bgp.RF_RTC_UC && !path.IsWithdraw {
+func (s *BgpServer) prePolicyFilterpathRTC(peer *peer, path, old *table.Path) (*table.Path, *table.PolicyOptions, bool) {
+	if path != nil && path.GetFamily() == bgp.RF_RTC_UC {
+		nlri, ok := path.GetNlri().(*bgp.RouteTargetMembershipNLRI)
+		if !ok {
+			s.logger.Warn("Route Target Constraint wrong format, ignore",
+				slog.String("Peer", peer.ID()),
+				slog.Any("Path", path))
+			return nil, nil, true
+		}
+
+		rtHash, err := table.NlriRouteTargetKey(nlri)
+		if err != nil {
+			s.logger.Warn("Route Target Constraint wrong format, ignore",
+				slog.String("Peer", peer.ID()),
+				slog.Any("Path", path))
+			return nil, nil, true
+		}
+
+		isAdvertiseDefaultRT := peer.isAdvertiseDefaultRTEnabled()
+		if isAdvertiseDefaultRT && rtHash != table.DefaultRT {
+			// If "advertise-default" is enabled, the default route target is
+			// already advertised to this peer, so non-default paths are skipped.
+			s.logger.Debug("given rtm nlri is not default, skipping to advertise",
+				slog.String("Peer", peer.ID()),
+				slog.Any("Path", path))
+			return nil, nil, true
+		} else if !isAdvertiseDefaultRT && rtHash == table.DefaultRT {
+			// Avoid the default route target being advertised to peers which
+			// have "advertise-default" disabled.
+			s.logger.Debug("given rtm nlri is default, skipping to advertise",
+				slog.String("Peer", peer.ID()),
+				slog.Any("Path", path))
+			return nil, nil, true
+		}
+
+		if path.IsWithdraw {
+			return path, nil, false
+		}
+
 		// If the given "path" is locally generated and the same with "old", we
 		// assumes "path" was already sent before. This assumption avoids the
 		// infinite UPDATE loop between Route Reflector and its clients.
 		if path.IsLocal() && path.Equal(old) {
-			s.logger.Debug("given rtm nlri is already sent, skipping to advertise", slog.Any("Path", path))
+			s.logger.Debug("given rtm nlri is already sent, skipping to advertise",
+				slog.String("Peer", peer.ID()),
+				slog.Any("Path", path))
 			return nil, nil, true
 		}
 
@@ -577,6 +615,15 @@ func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*tab
 				}
 			}
 		}
+	}
+	return path, nil, false
+}
+
+func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*table.Path, *table.PolicyOptions, bool) {
+	// Special handling for RTM NLRI.
+	path, _, stop := s.prePolicyFilterpathRTC(peer, path, old)
+	if stop {
+		return nil, nil, true
 	}
 
 	// only allow vpnv4 and vpnv6 paths to be advertised to VRFed neighbors.
@@ -1050,6 +1097,22 @@ func (s *BgpServer) sendSecondaryRoutes(peer *peer, newPath *table.Path, dsts []
 	return pl
 }
 
+func (s *BgpServer) processDefaultRT(peer *peer) []*table.Path {
+	if !peer.isAdvertiseDefaultRTEnabled() {
+		return nil
+	}
+
+	pi := table.NewLocalPeerInfo(&s.bgpConfig.Global)
+	path := table.NewDefaultRouteTargetPath(pi)
+
+	peer.localRib.Update(path)
+	outgoing := make([]*table.Path, 0, 1)
+	if p := s.filterpath(peer, path, nil); p != nil {
+		outgoing = append(outgoing, p)
+	}
+	return outgoing
+}
+
 func (s *BgpServer) processOutgoingPaths(peer *peer, paths, olds []*table.Path) []*table.Path {
 	if !needToAdvertise(peer) {
 		return nil
@@ -1249,7 +1312,9 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 	}
 	family := newPath.GetFamily()
 	for _, targetPeer := range s.neighborMap {
-		if source == nil && targetPeer.isRouteServerClient() || source != nil && source.isRouteServerClient() != targetPeer.isRouteServerClient() {
+		if (source == nil && targetPeer.isRouteServerClient()) ||
+			(source != nil && source.isRouteServerClient() != targetPeer.isRouteServerClient()) ||
+			(family == bgp.RF_RTC_UC && targetPeer.isAdvertiseDefaultRTEnabled()) {
 			continue
 		}
 		f := func() bgp.Family {
@@ -1589,6 +1654,10 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 
 				if len(pathList) > 0 {
 					sendfsmOutgoingMsg(peer, pathList)
+				}
+
+				if defaultRTPaths := s.processDefaultRT(peer); len(defaultRTPaths) > 0 {
+					sendfsmOutgoingMsg(peer, defaultRTPaths)
 				}
 			} else {
 				// RFC 4724 4.1
@@ -2450,10 +2519,7 @@ func (s *BgpServer) AddVrf(ctx context.Context, r *api.AddVrfRequest) error {
 			return err
 		}
 
-		pi := &table.PeerInfo{
-			AS:      s.bgpConfig.Global.Config.As,
-			LocalID: s.bgpConfig.Global.Config.RouterId,
-		}
+		pi := table.NewLocalPeerInfo(&s.bgpConfig.Global)
 
 		if pathList, err := s.globalRib.AddVrf(name, id, rd, im, ex, pi); err != nil {
 			return err

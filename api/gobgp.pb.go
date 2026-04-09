@@ -9723,10 +9723,11 @@ func (x *UseMultiplePaths) GetIbgp() *Ibgp {
 }
 
 type RouteTargetMembershipConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeferralTime  uint32                 `protobuf:"varint,1,opt,name=deferral_time,json=deferralTime,proto3" json:"deferral_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	DeferralTime     uint32                 `protobuf:"varint,1,opt,name=deferral_time,json=deferralTime,proto3" json:"deferral_time,omitempty"`
+	AdvertiseDefault bool                   `protobuf:"varint,2,opt,name=advertise_default,json=advertiseDefault,proto3" json:"advertise_default,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RouteTargetMembershipConfig) Reset() {
@@ -9766,11 +9767,19 @@ func (x *RouteTargetMembershipConfig) GetDeferralTime() uint32 {
 	return 0
 }
 
+func (x *RouteTargetMembershipConfig) GetAdvertiseDefault() bool {
+	if x != nil {
+		return x.AdvertiseDefault
+	}
+	return false
+}
+
 type RouteTargetMembershipState struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeferralTime  uint32                 `protobuf:"varint,1,opt,name=deferral_time,json=deferralTime,proto3" json:"deferral_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	DeferralTime     uint32                 `protobuf:"varint,1,opt,name=deferral_time,json=deferralTime,proto3" json:"deferral_time,omitempty"`
+	AdvertiseDefault bool                   `protobuf:"varint,2,opt,name=advertise_default,json=advertiseDefault,proto3" json:"advertise_default,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RouteTargetMembershipState) Reset() {
@@ -9808,6 +9817,13 @@ func (x *RouteTargetMembershipState) GetDeferralTime() uint32 {
 		return x.DeferralTime
 	}
 	return 0
+}
+
+func (x *RouteTargetMembershipState) GetAdvertiseDefault() bool {
+	if x != nil {
+		return x.AdvertiseDefault
+	}
+	return false
 }
 
 type RouteTargetMembership struct {
@@ -13339,11 +13355,13 @@ const file_api_gobgp_proto_rawDesc = "" +
 	"\x06config\x18\x01 \x01(\v2\x1b.api.UseMultiplePathsConfigR\x06config\x120\n" +
 	"\x05state\x18\x02 \x01(\v2\x1a.api.UseMultiplePathsStateR\x05state\x12\x1d\n" +
 	"\x04ebgp\x18\x03 \x01(\v2\t.api.EbgpR\x04ebgp\x12\x1d\n" +
-	"\x04ibgp\x18\x04 \x01(\v2\t.api.IbgpR\x04ibgp\"B\n" +
+	"\x04ibgp\x18\x04 \x01(\v2\t.api.IbgpR\x04ibgp\"o\n" +
 	"\x1bRouteTargetMembershipConfig\x12#\n" +
-	"\rdeferral_time\x18\x01 \x01(\rR\fdeferralTime\"A\n" +
+	"\rdeferral_time\x18\x01 \x01(\rR\fdeferralTime\x12+\n" +
+	"\x11advertise_default\x18\x02 \x01(\bR\x10advertiseDefault\"n\n" +
 	"\x1aRouteTargetMembershipState\x12#\n" +
-	"\rdeferral_time\x18\x01 \x01(\rR\fdeferralTime\"\x88\x01\n" +
+	"\rdeferral_time\x18\x01 \x01(\rR\fdeferralTime\x12+\n" +
+	"\x11advertise_default\x18\x02 \x01(\bR\x10advertiseDefault\"\x88\x01\n" +
 	"\x15RouteTargetMembership\x128\n" +
 	"\x06config\x18\x01 \x01(\v2 .api.RouteTargetMembershipConfigR\x06config\x125\n" +
 	"\x05state\x18\x02 \x01(\v2\x1f.api.RouteTargetMembershipStateR\x05state\"]\n" +

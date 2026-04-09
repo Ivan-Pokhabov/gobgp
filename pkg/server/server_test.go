@@ -1990,6 +1990,294 @@ func TestDoNotReactToDuplicateRTCMemberships(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestDefaultRT(t *testing.T) {
+	as := uint32(2000)
+	s1Port := int32(10179)
+	s2Port := int32(20179)
+
+	// Neighbor test params:
+	neighborOnlyConfig2 := makeNeighborConfig(s2Port)
+	neighborOnlyConfig2.Config.PeerAs = as
+	neighborOnlyConfig2.AfiSafis = oc.AfiSafis{}
+
+	neighborOnlyConfig1 := makeNeighborConfig(s1Port)
+	neighborOnlyConfig1.Config.PeerAs = as
+	neighborOnlyConfig1.AfiSafis = oc.AfiSafis{}
+	neighborOnlyConfig1.Transport.Config.PassiveMode = true
+
+	for _, family := range []oc.AfiSafiType{oc.AFI_SAFI_TYPE_L3VPN_IPV4_UNICAST, oc.AFI_SAFI_TYPE_RTC} {
+		afiSafi2 := oc.AfiSafi{
+			Config: oc.AfiSafiConfig{
+				AfiSafiName: family,
+				Enabled:     true,
+			},
+		}
+		if family == oc.AFI_SAFI_TYPE_RTC {
+			afiSafi2.RouteTargetMembership.Config.AdvertiseDefault = true
+		}
+		neighborOnlyConfig2.AfiSafis = append(neighborOnlyConfig2.AfiSafis, afiSafi2)
+
+		neighborOnlyConfig1.AfiSafis = append(neighborOnlyConfig1.AfiSafis, oc.AfiSafi{
+			Config: oc.AfiSafiConfig{
+				AfiSafiName: family,
+				Enabled:     true,
+			},
+		})
+	}
+
+	// Group test params:
+	groupConfig2 := makePeerGroup(as, s2Port)
+	groupConfig1 := makePeerGroup(as, s1Port)
+
+	for _, family := range []oc.AfiSafiType{oc.AFI_SAFI_TYPE_L3VPN_IPV4_UNICAST, oc.AFI_SAFI_TYPE_RTC} {
+		afiSafi1 := oc.AfiSafi{
+			Config: oc.AfiSafiConfig{
+				AfiSafiName: family,
+				Enabled:     true,
+			},
+		}
+		if family == oc.AFI_SAFI_TYPE_RTC {
+			afiSafi1.RouteTargetMembership.Config.AdvertiseDefault = true
+		}
+		groupConfig2.AfiSafis = append(groupConfig2.AfiSafis, afiSafi1)
+
+		groupConfig1.AfiSafis = append(groupConfig1.AfiSafis, oc.AfiSafi{
+			Config: oc.AfiSafiConfig{
+				AfiSafiName: family,
+				Enabled:     true,
+			},
+		})
+	}
+
+	neighborConfig2 := makeNeighborConfig(s2Port)
+	neighborConfig2.Config.PeerGroup = "rtc-group"
+
+	neighborConfig1 := makeNeighborConfig(s1Port)
+	neighborConfig1.Config.PeerGroup = "rtc-group"
+	neighborConfig1.Transport.Config.PassiveMode = true
+
+	for _, tt := range []struct {
+		name               string
+		gConf2, gConf1     *oc.PeerGroup
+		neiConf2, neiConf1 *oc.Neighbor
+		rejectLocal        bool
+	}{
+		{
+			name:     "afisafi from groups",
+			gConf2:   groupConfig2,
+			gConf1:   groupConfig1,
+			neiConf2: neighborConfig2,
+			neiConf1: neighborConfig1,
+		},
+		{
+			name:     "afisafi from neighbors",
+			neiConf2: neighborOnlyConfig2,
+			neiConf1: neighborOnlyConfig1,
+		},
+		{
+			name:        "reject local",
+			gConf2:      groupConfig2,
+			gConf1:      groupConfig1,
+			neiConf2:    neighborConfig2,
+			neiConf1:    neighborConfig1,
+			rejectLocal: true,
+		},
+	} {
+		t.Run(tt.name, func(test *testing.T) {
+			ctx := context.Background()
+			s1 := runNewServer(t, as, "1.1.1.1", s1Port)
+			err := s1.SetLogLevel(ctx, &api.SetLogLevelRequest{Level: api.SetLogLevelRequest_LEVEL_DEBUG})
+			assert.NoError(t, err)
+			watcher1 := s1.watch(WatchUpdate(true, "", ""))
+			defer s1.StopBgp(context.Background(), &api.StopBgpRequest{})
+
+			s2 := runNewServer(t, as, "2.2.2.2", s2Port)
+			defer s2.StopBgp(context.Background(), &api.StopBgpRequest{})
+
+			err = s2.SetLogLevel(ctx, &api.SetLogLevelRequest{Level: api.SetLogLevelRequest_LEVEL_DEBUG})
+			assert.NoError(t, err)
+
+			if tt.gConf2 != nil {
+				err := s1.addPeerGroup(tt.gConf2)
+				assert.Nil(t, err)
+			}
+			defer func() {
+				if tt.gConf2 != nil {
+					s1.DeletePeerGroup(ctx, &api.DeletePeerGroupRequest{
+						Name: tt.gConf2.Config.PeerGroupName,
+					})
+				}
+			}()
+
+			if tt.gConf1 != nil {
+				err := s2.addPeerGroup(tt.gConf1)
+				assert.Nil(t, err)
+			}
+
+			if err := s1.AddPeer(ctx, &api.AddPeerRequest{Peer: oc.NewPeerFromConfigStruct(tt.neiConf2)}); err != nil {
+				t.Fatal(err)
+			}
+			defer s1.DeletePeer(ctx, &api.DeletePeerRequest{
+				Address: "127.0.0.1",
+			})
+
+			if tt.rejectLocal {
+				st1 := &api.Statement{
+					Name: "s1",
+					Conditions: &api.Conditions{
+						AfiSafiIn: []*api.Family{
+							{Afi: api.Family_Afi(bgp.RF_RTC_UC.Afi()), Safi: api.Family_Safi(bgp.RF_RTC_UC.Safi())},
+						},
+						RouteType: api.Conditions_ROUTE_TYPE_LOCAL,
+					},
+					Actions: &api.Actions{
+						RouteAction: api.RouteAction_ROUTE_ACTION_REJECT,
+					},
+				}
+				p1 := &api.Policy{
+					Name:       "p1",
+					Statements: []*api.Statement{st1},
+				}
+				err := s1.AddPolicy(context.Background(), &api.AddPolicyRequest{Policy: p1})
+				if err != nil {
+					t.Error(err)
+				}
+				err = s1.AddPolicyAssignment(context.Background(), &api.AddPolicyAssignmentRequest{
+					Assignment: &api.PolicyAssignment{
+						Name:          table.GLOBAL_RIB_NAME,
+						Direction:     api.PolicyDirection_POLICY_DIRECTION_EXPORT,
+						Policies:      []*api.Policy{p1},
+						DefaultAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
+					},
+				})
+				if err != nil {
+					t.Error(err)
+				}
+			}
+
+			if err := s2.AddPeer(ctx, &api.AddPeerRequest{Peer: oc.NewPeerFromConfigStruct(tt.neiConf1)}); err != nil {
+				t.Fatal(err)
+			}
+
+			watcher2 := s2.watch(WatchUpdate(true, "", ""))
+
+			rt100 := bgp.NewTwoOctetAsSpecificExtended(bgp.EC_SUBTYPE_ROUTE_TARGET, 100, 100, true)
+			panh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("3.3.3.3"))
+			attrs := []bgp.PathAttributeInterface{
+				bgp.NewPathAttributeOrigin(0),
+				panh,
+				bgp.NewPathAttributeExtendedCommunities([]bgp.ExtendedCommunityInterface{rt100}),
+			}
+			rd, _ := bgp.ParseRouteDistinguisher("100:100")
+			labels := bgp.NewMPLSLabelStack(100, 200)
+			prefix, _ := bgp.NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("10.30.2.0/24"), *labels, rd)
+			path, _ := apiutil.NewPath(bgp.RF_IPv4_VPN, prefix, false, attrs, time.Now())
+
+			if _, err := s2.AddPath(apiutil.AddPathRequest{Paths: []*apiutil.Path{mustApi2apiutilPath(path)}}); err != nil {
+				t.Fatal(err)
+			}
+
+			// default is rejected by policy
+			if tt.rejectLocal {
+				// s2 must not receive default rt from s1.
+				t1 := time.NewTimer(10 * time.Second)
+				exitLoop := false
+				for !exitLoop {
+					select {
+					case ev := <-watcher2.Event():
+						switch msg := ev.(type) {
+						case *watchEventUpdate:
+							for _, path := range msg.PathList {
+								t.Logf("bgp2 received path: %s", path.String())
+								if rtcPath, ok := path.GetNlri().(*bgp.RouteTargetMembershipNLRI); ok {
+									if rtcPath.RouteTarget == nil {
+										t.Fatalf("bgp2 found rejected Default Route: %s", rtcPath.String())
+									} else {
+										t.Fatalf("bgp2 has unknown RT Path %s", rtcPath.String())
+									}
+								}
+							}
+						}
+					case <-t1.C:
+						t.Logf("timeout while waiting for default rtc")
+						exitLoop = true
+					}
+				}
+				t1.Stop()
+				return
+			}
+
+			// s1 should receive "10.30.2.0" from s2.
+			// s2 should receive default rt from s1.
+			t1 := time.NewTimer(30 * time.Second)
+			foundVpn := false
+			founRtc := false
+			for !foundVpn || !founRtc {
+				select {
+				case ev := <-watcher1.Event():
+					switch msg := ev.(type) {
+					case *watchEventUpdate:
+						for _, path := range msg.PathList {
+							t.Logf("bgp1 received path: %s", path.String())
+							if vpnPath, ok := path.GetNlri().(*bgp.LabeledVPNIPAddrPrefix); ok {
+								if vpnPath.Prefix == prefix.Prefix {
+									t.Logf("bgp1 found expected prefix: %s", vpnPath.Prefix)
+									foundVpn = true
+								} else {
+									t.Fatalf("bgp1 has unknown prefix %s != %s", vpnPath.Prefix, prefix.Prefix)
+								}
+							}
+						}
+					}
+				case ev := <-watcher2.Event():
+					switch msg := ev.(type) {
+					case *watchEventUpdate:
+						for _, path := range msg.PathList {
+							t.Logf("bgp2 received path: %s", path.String())
+							if rtcPath, ok := path.GetNlri().(*bgp.RouteTargetMembershipNLRI); ok {
+								if rtcPath.RouteTarget == nil {
+									t.Logf("bgp2 found Default Route: %s", rtcPath.String())
+									founRtc = true
+								} else {
+									t.Fatalf("bgp2 has unknown RT Path %s", rtcPath.String())
+								}
+							}
+						}
+					}
+				case <-t1.C:
+					t.Fatalf("timeout while waiting for update path event")
+				}
+			}
+			t1.Stop()
+
+			// s2 must not receive "10.30.2.0" from s1.
+			t1 = time.NewTimer(5 * time.Second)
+			for found := false; !found; {
+				select {
+				case ev := <-watcher2.Event():
+					switch msg := ev.(type) {
+					case *watchEventUpdate:
+						for _, path := range msg.PathList {
+							t.Logf("bgp2 received path: %s", path.String())
+							if vpnPath, ok := path.GetNlri().(*bgp.LabeledVPNIPAddrPrefix); ok {
+								if vpnPath.Prefix == prefix.Prefix {
+									t.Fatalf("bgp2 received path without request: %s", vpnPath.Prefix)
+								} else {
+									t.Fatalf("unknown prefix %s != %s", vpnPath.Prefix, prefix.Prefix)
+								}
+							}
+						}
+					}
+				case <-t1.C:
+					t.Logf("no paths have been received on s3. OK")
+					found = true
+				}
+			}
+			t1.Stop()
+		})
+	}
+}
+
 func TestDelVrfWithRTC(t *testing.T) {
 	ctx := context.Background()
 
@@ -2745,6 +3033,20 @@ func makeNeighborConfig(port int32) *oc.Neighbor {
 			Config: oc.TimersConfig{
 				ConnectRetry:           1,
 				IdleHoldTimeAfterReset: 1,
+			},
+		},
+	}
+}
+
+func makePeerGroup(as uint32, port int32) *oc.PeerGroup {
+	return &oc.PeerGroup{
+		Config: oc.PeerGroupConfig{
+			PeerAs:        as,
+			PeerGroupName: "rtc-group",
+		},
+		Transport: oc.Transport{
+			Config: oc.TransportConfig{
+				RemotePort: uint16(port),
 			},
 		},
 	}

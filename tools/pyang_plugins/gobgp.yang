@@ -1388,6 +1388,9 @@ module gobgp {
       leaf deferral-time {
         type uint16;
       }
+      leaf advertise-default {
+        type boolean;
+      }
   }
 
   grouping afi-safi-state {

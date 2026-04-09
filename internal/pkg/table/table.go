@@ -322,6 +322,10 @@ func (t *Table) deleteRTCPathsByVrf(vrf *Vrf, vrfs map[string]*Vrf) []*Path {
 	for lhs := range vrf.ImportRt {
 		t.destinations.iterateAllDestinations(func(dest *destination) {
 			nlri := dest.GetNlri().(*bgp.RouteTargetMembershipNLRI)
+			// default can not be in vrf imports.
+			if nlri.RouteTarget == nil {
+				return
+			}
 			rhs, _ := extCommRouteTargetKey(nlri.RouteTarget)
 			if lhs == rhs && isLastTargetUser(vrfs, lhs) {
 				for _, p := range dest.knownPathList {
@@ -1061,7 +1065,7 @@ func extCommRouteTargetKey(routeTarget bgp.ExtendedCommunityInterface) (uint64, 
 	}
 }
 
-func nlriRouteTargetKey(nlri *bgp.RouteTargetMembershipNLRI) (uint64, error) {
+func NlriRouteTargetKey(nlri *bgp.RouteTargetMembershipNLRI) (uint64, error) {
 	if nlri.RouteTarget == nil {
 		return DefaultRT, nil
 	}
