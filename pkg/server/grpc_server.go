@@ -420,6 +420,18 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 			if err != nil {
 				remoteCaps = []*api.Capability{}
 			}
+			localCaps, err := apiutil.MarshalCapabilities(p.State.LocalCap)
+			if err != nil {
+				localCaps = []*api.Capability{}
+			}
+			afiSafis := make([]*api.AfiSafi, 0, len(p.Families))
+			for _, f := range p.Families {
+				fam := &api.Family{Afi: api.Family_Afi(f.Afi()), Safi: api.Family_Safi(f.Safi())}
+				afiSafis = append(afiSafis, &api.AfiSafi{
+					Config: &api.AfiSafiConfig{Family: fam},
+					State:  &api.AfiSafiState{Family: fam, Enabled: true},
+				})
+			}
 			fn(&api.WatchEventResponse{
 				Event: &api.WatchEventResponse_Peer{
 					Peer: &api.WatchEventResponse_PeerEvent{
@@ -430,6 +442,7 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 								LocalAsn:          p.Conf.LocalASN,
 								NeighborAddress:   p.Conf.NeighborAddress.String(),
 								NeighborInterface: p.Conf.NeighborInterface,
+								PeerGroup:         p.Conf.PeerGroup,
 							},
 							State: &api.PeerState{
 								PeerAsn:         p.State.PeerASN,
@@ -438,13 +451,16 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 								SessionState:    api.PeerState_SessionState(int(p.State.SessionState) + 1),
 								AdminState:      p.State.AdminState,
 								RouterId:        p.State.RouterID.String(),
+								PeerGroup:       p.State.PeerGroup,
 								RemoteCap:       remoteCaps,
+								LocalCap:        localCaps,
 							},
 							Transport: &api.Transport{
 								LocalAddress: p.Transport.LocalAddress.String(),
 								LocalPort:    p.Transport.LocalPort,
 								RemotePort:   p.Transport.RemotePort,
 							},
+							AfiSafis: afiSafis,
 						},
 					},
 				},
