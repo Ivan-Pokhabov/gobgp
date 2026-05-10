@@ -586,6 +586,78 @@ func Test_IP6FlowSpecExtended(t *testing.T) {
 	assert.Equal(t, m1, m2)
 }
 
+func Test_UnknownIP6Extended_RoundTrip(t *testing.T) {
+	assert := assert.New(t)
+
+	// 20-byte unknown IPv6 Extended Community (type 0x99, 19-byte value)
+	raw := []byte{
+		0x99, 0x77, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+		0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+		0x0f, 0x10, 0x11, 0x12,
+	}
+
+	e, err := ParseIP6Extended(raw)
+	require.NoError(t, err)
+
+	unknown, ok := e.(*UnknownIP6Extended)
+	require.True(t, ok, "expected *UnknownIP6Extended")
+	assert.Equal(ExtendedCommunityAttrType(0x99), unknown.Type)
+	assert.Equal(raw[1:], unknown.Value)
+
+	serialized, err := unknown.Serialize()
+	require.NoError(t, err)
+	assert.Equal(raw, serialized, "round-trip must be byte-for-byte identical")
+}
+
+func Test_UnknownIP6Extended_PathAttribute_RoundTrip(t *testing.T) {
+	assert := assert.New(t)
+
+	// Construct a PathAttributeIP6ExtendedCommunities with an unknown type.
+	// PathAttribute header (4 bytes) + 20-byte community value.
+	// Flags: optional+transitive = 0xc0, type = 25 (0x19), length = 20 (0x14)
+	raw := []byte{
+		0xc0, 0x19, 0x14,
+		0x99, 0x77, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+		0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+		0x0f, 0x10, 0x11, 0x12,
+	}
+
+	attr := &PathAttributeIP6ExtendedCommunities{}
+	err := attr.DecodeFromBytes(raw)
+	require.NoError(t, err)
+	require.Len(t, attr.Value, 1)
+
+	_, ok := attr.Value[0].(*UnknownIP6Extended)
+	assert.True(ok, "expected *UnknownIP6Extended")
+
+	serialized, err := attr.Serialize()
+	require.NoError(t, err)
+	assert.Equal(raw, serialized, "round-trip must be byte-for-byte identical")
+}
+
+func Test_UnknownIP6FlowSpecExtended_RoundTrip(t *testing.T) {
+	assert := assert.New(t)
+
+	// EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL (0x80) with unknown subtype
+	// so that parseIP6FlowSpecExtended falls through to the UnknownIP6Extended path.
+	raw := []byte{
+		0x80, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+		0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+		0x0f, 0x10, 0x11, 0x12,
+	}
+
+	e, err := ParseIP6Extended(raw)
+	require.NoError(t, err)
+
+	unknown, ok := e.(*UnknownIP6Extended)
+	require.True(t, ok, "expected *UnknownIP6Extended")
+	assert.Equal(raw[1:], unknown.Value)
+
+	serialized, err := unknown.Serialize()
+	require.NoError(t, err)
+	assert.Equal(raw, serialized, "round-trip must be byte-for-byte identical")
+}
+
 func Test_FlowSpecNlriv6(t *testing.T) {
 	cmp := make([]FlowSpecComponentInterface, 0)
 	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001::/64"))

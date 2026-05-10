@@ -14034,9 +14034,11 @@ func parseIP6FlowSpecExtended(data []byte) (ExtendedCommunityInterface, error) {
 			return NewRedirectIPv6AddressSpecificExtended(ipv6, localAdmin)
 		}
 	}
-	return &UnknownExtended{
+	v := make([]byte, 19)
+	copy(v, data[1:20])
+	return &UnknownIP6Extended{
 		Type:  ExtendedCommunityAttrType(data[0]),
-		Value: data[1:20],
+		Value: v,
 	}, nil
 }
 
@@ -14090,6 +14092,52 @@ func NewUnknownExtended(typ ExtendedCommunityAttrType, value []byte) *UnknownExt
 		Type:  typ,
 		Value: v,
 	}
+}
+
+// UnknownIP6Extended represents an unknown IPv6 Extended Community (type 25).
+// IPv6 Extended Communities are 20 bytes long, unlike the 8-byte regular Extended Communities.
+type UnknownIP6Extended struct {
+	Type  ExtendedCommunityAttrType
+	Value []byte // 19 bytes (type byte is separate)
+}
+
+func (e *UnknownIP6Extended) Serialize() ([]byte, error) {
+	if len(e.Value) != 19 {
+		return nil, fmt.Errorf("invalid value length for unknown IPv6 extended community: %d", len(e.Value))
+	}
+	buf := make([]byte, 20)
+	buf[0] = uint8(e.Type)
+	copy(buf[1:], e.Value)
+	return buf, nil
+}
+
+func (e *UnknownIP6Extended) String() string {
+	return fmt.Sprintf("%d %x", e.Type, e.Value)
+}
+
+func (e *UnknownIP6Extended) MarshalJSON() ([]byte, error) {
+	t, s := e.GetTypes()
+	return json.Marshal(struct {
+		Type    ExtendedCommunityAttrType    `json:"type"`
+		Subtype ExtendedCommunityAttrSubType `json:"subtype"`
+		Value   []byte                       `json:"value"`
+	}{
+		Type:    t,
+		Subtype: s,
+		Value:   e.Value,
+	})
+}
+
+func (e *UnknownIP6Extended) GetTypes() (ExtendedCommunityAttrType, ExtendedCommunityAttrSubType) {
+	var subType ExtendedCommunityAttrSubType
+	if len(e.Value) > 0 {
+		subType = ExtendedCommunityAttrSubType(e.Value[0])
+	}
+	return e.Type, subType
+}
+
+func (e *UnknownIP6Extended) Flat() map[string]string {
+	return map[string]string{}
 }
 
 type PathAttributeExtendedCommunities struct {
@@ -15161,9 +15209,11 @@ func ParseIP6Extended(data []byte) (ExtendedCommunityInterface, error) {
 	case EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL:
 		return parseIP6FlowSpecExtended(data)
 	default:
-		return &UnknownExtended{
+		v := make([]byte, 19)
+		copy(v, data[1:20])
+		return &UnknownIP6Extended{
 			Type:  ExtendedCommunityAttrType(data[0]),
-			Value: data[1:8],
+			Value: v,
 		}, nil
 	}
 }
