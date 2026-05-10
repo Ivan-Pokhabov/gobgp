@@ -1723,6 +1723,87 @@ func TestCapSoftwareVersionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCapabilityBoundaryEnforcement(t *testing.T) {
+	// Each fixed-size capability must reject a CapLen that does not match the
+	// required size. Before the fix, decoders used data[2:] (the full remaining
+	// buffer) instead of the CapLen-bounded slice, allowing bytes from a
+	// following capability to be misread as the capability value.
+
+	t.Run("CapFourOctetASNumber_CapLen0_rejected", func(t *testing.T) {
+		// CapLen=0; the 4 bytes after the header belong to the next capability.
+		// Before the fix these were silently read as the AS number.
+		data := []byte{
+			byte(BGP_CAP_FOUR_OCTET_AS_NUMBER), 0x00, // code=65, CapLen=0
+			0x00, 0x00, 0xfd, 0xe8, // next cap bytes (AS 65000 in big-endian)
+		}
+		c := &CapFourOctetASNumber{}
+		require.Error(t, c.DecodeFromBytes(data))
+	})
+
+	t.Run("CapFourOctetASNumber_CapLen2_rejected", func(t *testing.T) {
+		data := []byte{byte(BGP_CAP_FOUR_OCTET_AS_NUMBER), 0x02, 0x00, 0x01}
+		c := &CapFourOctetASNumber{}
+		require.Error(t, c.DecodeFromBytes(data))
+	})
+
+	t.Run("CapFourOctetASNumber_valid", func(t *testing.T) {
+		cap := NewCapFourOctetASNumber(65000)
+		buf, err := cap.Serialize()
+		require.NoError(t, err)
+		decoded := &CapFourOctetASNumber{}
+		require.NoError(t, decoded.DecodeFromBytes(buf))
+		require.Equal(t, uint32(65000), decoded.CapValue)
+	})
+
+	t.Run("CapMultiProtocol_CapLen0_rejected", func(t *testing.T) {
+		data := []byte{
+			byte(BGP_CAP_MULTIPROTOCOL), 0x00, // CapLen=0
+			0x00, 0x01, 0x00, 0x01, // next cap bytes
+		}
+		c := &CapMultiProtocol{}
+		require.Error(t, c.DecodeFromBytes(data))
+	})
+
+	t.Run("CapMultiProtocol_CapLen2_rejected", func(t *testing.T) {
+		data := []byte{byte(BGP_CAP_MULTIPROTOCOL), 0x02, 0x00, 0x01}
+		c := &CapMultiProtocol{}
+		require.Error(t, c.DecodeFromBytes(data))
+	})
+
+	t.Run("CapMultiProtocol_valid", func(t *testing.T) {
+		cap := NewCapMultiProtocol(RF_IPv4_UC)
+		buf, err := cap.Serialize()
+		require.NoError(t, err)
+		decoded := &CapMultiProtocol{}
+		require.NoError(t, decoded.DecodeFromBytes(buf))
+		require.Equal(t, RF_IPv4_UC, decoded.CapValue)
+	})
+
+	t.Run("CapGracefulRestart_CapLen0_rejected", func(t *testing.T) {
+		data := []byte{
+			byte(BGP_CAP_GRACEFUL_RESTART), 0x00, // CapLen=0
+			0x80, 0x78, // next cap bytes (would be misread as Flags/Time)
+		}
+		c := &CapGracefulRestart{}
+		require.Error(t, c.DecodeFromBytes(data))
+	})
+
+	t.Run("CapGracefulRestart_CapLen1_rejected", func(t *testing.T) {
+		data := []byte{byte(BGP_CAP_GRACEFUL_RESTART), 0x01, 0x80}
+		c := &CapGracefulRestart{}
+		require.Error(t, c.DecodeFromBytes(data))
+	})
+
+	t.Run("CapGracefulRestart_valid", func(t *testing.T) {
+		cap := NewCapGracefulRestart(false, false, 120, []*CapGracefulRestartTuple{})
+		buf, err := cap.Serialize()
+		require.NoError(t, err)
+		decoded := &CapGracefulRestart{}
+		require.NoError(t, decoded.DecodeFromBytes(buf))
+		require.Equal(t, uint16(120), decoded.Time)
+	})
+}
+
 func TestFuzzCrashers(t *testing.T) {
 	crashers := []string{
 		"000000000000000000\x01",

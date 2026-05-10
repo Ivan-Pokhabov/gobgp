@@ -504,11 +504,11 @@ func (c *CapMultiProtocol) DecodeFromBytes(data []byte) error {
 	if err := c.DefaultParameterCapability.DecodeFromBytes(data); err != nil {
 		return err
 	}
-	data = data[2:]
-	if len(data) < 4 {
-		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityMultiProtocol bytes available")
+	if c.CapLen != 4 {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "CapMultiProtocol requires exactly 4 bytes")
 	}
-	c.CapValue = NewFamily(binary.BigEndian.Uint16(data[:2]), data[3])
+	v := c.DefaultParameterCapability.CapValue
+	c.CapValue = NewFamily(binary.BigEndian.Uint16(v[:2]), v[3])
 	return nil
 }
 
@@ -685,27 +685,27 @@ func (c *CapGracefulRestart) DecodeFromBytes(data []byte) error {
 	if err := c.DefaultParameterCapability.DecodeFromBytes(data); err != nil {
 		return err
 	}
-	data = data[2:]
-	if len(data) < 2 {
+	if c.CapLen < 2 {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityGracefulRestart bytes available")
 	}
-	restart := binary.BigEndian.Uint16(data[:2])
+	v := c.CapValue
+	restart := binary.BigEndian.Uint16(v[:2])
 	c.Flags = uint8(restart >> 12)
 	c.Time = restart & 0xfff
-	data = data[2:]
+	v = v[2:]
 
 	valueLen := int(c.CapLen) - 2
 
-	if valueLen >= 4 && len(data) >= valueLen {
+	if valueLen >= 4 && len(v) >= valueLen {
 		c.Tuples = make([]*CapGracefulRestartTuple, 0, valueLen/4)
 
 		for i := valueLen; i >= 4; i -= 4 {
 			t := &CapGracefulRestartTuple{
-				binary.BigEndian.Uint16(data[:2]),
-				data[2], data[3],
+				binary.BigEndian.Uint16(v[:2]),
+				v[2], v[3],
 			}
 			c.Tuples = append(c.Tuples, t)
-			data = data[4:]
+			v = v[4:]
 		}
 	}
 	return nil
@@ -766,11 +766,10 @@ func (c *CapFourOctetASNumber) DecodeFromBytes(data []byte) error {
 	if err := c.DefaultParameterCapability.DecodeFromBytes(data); err != nil {
 		return err
 	}
-	data = data[2:]
-	if len(data) < 4 {
-		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFourOctetASNumber bytes available")
+	if c.CapLen != 4 {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "CapFourOctetASNumber requires exactly 4 bytes")
 	}
-	c.CapValue = binary.BigEndian.Uint32(data[:4])
+	c.CapValue = binary.BigEndian.Uint32(c.DefaultParameterCapability.CapValue)
 	return nil
 }
 
@@ -1033,35 +1032,22 @@ func (c *CapFQDN) DecodeFromBytes(data []byte) error {
 	if err := c.DefaultParameterCapability.DecodeFromBytes(data); err != nil {
 		return err
 	}
-	if len(data) < 2 {
+	v := c.CapValue
+	if len(v) < 1 {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
 	}
-	data = data[2:]
-	rest := len(data)
-	if rest < 1 {
-		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
-	}
-	rest -= 1
-	c.HostNameLen = data[0]
+	c.HostNameLen = v[0]
 	hostNameLen := int(c.HostNameLen)
-	if rest < hostNameLen {
+	if len(v) < 1+hostNameLen+1 {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
 	}
-	if len(data) < hostNameLen+2 {
-		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
-	}
-	c.HostName = string(data[1 : hostNameLen+1])
-	rest -= hostNameLen
-	if rest < 1 {
-		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
-	}
-	rest -= 1
-	domainNameLen := data[hostNameLen+1]
-	if rest < int(domainNameLen) {
+	c.HostName = string(v[1 : hostNameLen+1])
+	domainNameLen := v[hostNameLen+1]
+	if len(v) < 1+hostNameLen+1+int(domainNameLen) {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
 	}
 	c.DomainNameLen = domainNameLen
-	c.DomainName = string(data[hostNameLen+2 : hostNameLen+2+int(domainNameLen)])
+	c.DomainName = string(v[hostNameLen+2 : hostNameLen+2+int(domainNameLen)])
 	return nil
 }
 
@@ -1117,16 +1103,16 @@ func (c *CapSoftwareVersion) DecodeFromBytes(data []byte) error {
 	if err := c.DefaultParameterCapability.DecodeFromBytes(data); err != nil {
 		return err
 	}
-	data = data[2:]
-	if len(data) < 2 {
+	v := c.CapValue
+	if len(v) < 2 {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilitySoftwareVersion bytes allowed")
 	}
-	softwareVersionLen := data[0]
-	if len(data[1:]) < int(softwareVersionLen) || softwareVersionLen > 64 || softwareVersionLen == 0 {
+	softwareVersionLen := v[0]
+	if len(v[1:]) < int(softwareVersionLen) || softwareVersionLen > 64 || softwareVersionLen == 0 {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "invalid length of software version capablity")
 	}
 	c.SoftwareVersionLen = softwareVersionLen
-	c.SoftwareVersion = string(data[1 : 1+c.SoftwareVersionLen])
+	c.SoftwareVersion = string(v[1 : 1+c.SoftwareVersionLen])
 	return nil
 }
 
