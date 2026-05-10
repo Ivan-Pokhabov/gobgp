@@ -25,6 +25,7 @@ import (
 	"github.com/osrg/gobgp/v4/api"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_OriginAttribute(t *testing.T) {
@@ -1561,6 +1562,118 @@ func TestFullCyclePrefixSID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUnmarshalSRSegments_NilFlags(t *testing.T) {
+	// Flags is an optional protobuf sub-message. A caller that builds
+	// api.SegmentTypeA or api.SegmentTypeB without setting Flags must
+	// not cause a nil pointer dereference; the result should be all-zero
+	// flag bits.
+	t.Run("SegmentTypeA_nil_flags", func(t *testing.T) {
+		segs := []*api.TunnelEncapSubTLVSRSegmentList_Segment{
+			{Segment: &api.TunnelEncapSubTLVSRSegmentList_Segment_A{
+				A: &api.SegmentTypeA{Label: 100},
+				// Flags intentionally omitted (nil)
+			}},
+		}
+		result, err := UnmarshalSRSegments(segs)
+		assert.NoError(t, err)
+		require.Len(t, result, 1)
+		seg, ok := result[0].(*bgp.SegmentTypeA)
+		require.True(t, ok)
+		assert.Equal(t, uint32(100), seg.Label)
+		assert.Equal(t, uint8(0), seg.Flags)
+	})
+
+	t.Run("SegmentTypeB_nil_flags", func(t *testing.T) {
+		sid := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
+		segs := []*api.TunnelEncapSubTLVSRSegmentList_Segment{
+			{Segment: &api.TunnelEncapSubTLVSRSegmentList_Segment_B{
+				B: &api.SegmentTypeB{Sid: sid},
+				// Flags intentionally omitted (nil)
+			}},
+		}
+		result, err := UnmarshalSRSegments(segs)
+		assert.NoError(t, err)
+		require.Len(t, result, 1)
+		seg, ok := result[0].(*bgp.SegmentTypeB)
+		require.True(t, ok)
+		assert.Equal(t, sid, seg.SID)
+		assert.Equal(t, uint8(0), seg.Flags)
+	})
+}
+
+func TestUnmarshalSRSegments_RoundTrip(t *testing.T) {
+	t.Run("SegmentTypeA", func(t *testing.T) {
+		orig := []bgp.TunnelEncapSubTLVInterface{
+			&bgp.SegmentTypeA{
+				TunnelEncapSubTLV: bgp.TunnelEncapSubTLV{Type: bgp.EncapSubTLVType(bgp.TypeA), Length: 6},
+				Label:             200,
+				Flags:             0x80 | 0x10, // VFlag + BFlag
+			},
+		}
+		marshaled, err := MarshalSRSegments(orig)
+		require.NoError(t, err)
+		result, err := UnmarshalSRSegments(marshaled)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		seg, ok := result[0].(*bgp.SegmentTypeA)
+		require.True(t, ok)
+		assert.Equal(t, uint32(200), seg.Label)
+		assert.Equal(t, uint8(0x80|0x10), seg.Flags)
+	})
+
+	t.Run("SegmentTypeB", func(t *testing.T) {
+		sid := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
+		orig := []bgp.TunnelEncapSubTLVInterface{
+			&bgp.SegmentTypeB{
+				TunnelEncapSubTLV: bgp.TunnelEncapSubTLV{Type: bgp.EncapSubTLVType(bgp.TypeB), Length: 18},
+				SID:               sid,
+				Flags:             0x40 | 0x20, // AFlag + SFlag
+			},
+		}
+		marshaled, err := MarshalSRSegments(orig)
+		require.NoError(t, err)
+		result, err := UnmarshalSRSegments(marshaled)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		seg, ok := result[0].(*bgp.SegmentTypeB)
+		require.True(t, ok)
+		assert.Equal(t, sid, seg.SID)
+		assert.Equal(t, uint8(0x40|0x20), seg.Flags)
+	})
+
+	t.Run("SegmentTypeB_with_SRv6EBS", func(t *testing.T) {
+		sid := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02}
+		orig := []bgp.TunnelEncapSubTLVInterface{
+			&bgp.SegmentTypeB{
+				TunnelEncapSubTLV: bgp.TunnelEncapSubTLV{Type: bgp.EncapSubTLVType(bgp.TypeB), Length: 18},
+				SID:               sid,
+				Flags:             0x80,
+				SRv6EBS: &bgp.SRv6EndpointBehaviorStructure{
+					Behavior: bgp.END,
+					BlockLen: 40,
+					NodeLen:  24,
+					FuncLen:  16,
+					ArgLen:   0,
+				},
+			},
+		}
+		marshaled, err := MarshalSRSegments(orig)
+		require.NoError(t, err)
+		result, err := UnmarshalSRSegments(marshaled)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		seg, ok := result[0].(*bgp.SegmentTypeB)
+		require.True(t, ok)
+		assert.Equal(t, sid, seg.SID)
+		assert.Equal(t, uint8(0x80), seg.Flags)
+		require.NotNil(t, seg.SRv6EBS)
+		assert.Equal(t, bgp.END, seg.SRv6EBS.Behavior)
+		assert.Equal(t, uint8(40), seg.SRv6EBS.BlockLen)
+		assert.Equal(t, uint8(24), seg.SRv6EBS.NodeLen)
+		assert.Equal(t, uint8(16), seg.SRv6EBS.FuncLen)
+	})
 }
 
 func TestFullCycleSRv6SIDStructureSubSubTLV(t *testing.T) {
