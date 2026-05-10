@@ -464,6 +464,44 @@ func Test_MPLSLabelStack(t *testing.T) {
 	assert.Equal(WITHDRAW_LABEL, mpls.Labels[0])
 }
 
+func TestMPLSLabelStackMissingBOS(t *testing.T) {
+	// Three-byte label with bottom-of-stack bit clear (label 100, S=0).
+	noBOS := []byte{0x00, 0x06, 0x40} // label=100, TC=0, S=0
+
+	t.Run("DecodeFromBytes_rejects_missing_BOS", func(t *testing.T) {
+		s := &MPLSLabelStack{}
+		err := s.DecodeFromBytes(noBOS)
+		require.Error(t, err, "label stack without BOS bit must be rejected")
+	})
+
+	t.Run("Serialize_empty_returns_error_not_panic", func(t *testing.T) {
+		s := &MPLSLabelStack{Labels: []uint32{}}
+		_, err := s.Serialize()
+		require.Error(t, err, "serializing empty label stack must return error")
+	})
+
+	t.Run("LabeledIPAddrPrefix_rejects_missing_BOS", func(t *testing.T) {
+		// bits=27 (3-byte label + 3-bit prefix), then label without BOS, then prefix byte.
+		// bits field: label(3B)=24 bits + prefix bits=3 → 27
+		data := []byte{27, 0x00, 0x06, 0x40, 0xa0} // bits=27, label noBOS, prefix
+		n := &LabeledIPAddrPrefix{}
+		err := n.decodeFromBytes(data, 4)
+		require.Error(t, err)
+	})
+
+	t.Run("LabeledVPNIPAddrPrefix_rejects_bits_too_short", func(t *testing.T) {
+		// Construct a VPN NLRI where bits < 8*labelLen to trigger the
+		// "declared length too short for label stack" path.
+		// Valid label with BOS: label=100, S=1 → [0x00, 0x06, 0x41]
+		// bits=1 (way too small for a 3-byte label stack + 8-byte RD + prefix)
+		validLabel := []byte{0x00, 0x06, 0x41}   // label=100, BOS=1
+		data := append([]byte{1}, validLabel...) // bits=1
+		n := &LabeledVPNIPAddrPrefix{}
+		err := n.decodeFromBytes(data, 4)
+		require.Error(t, err)
+	})
+}
+
 func Test_FlowSpecNlri(t *testing.T) {
 	assert := assert.New(t)
 	cmp := make([]FlowSpecComponentInterface, 0)

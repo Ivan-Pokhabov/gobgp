@@ -1819,6 +1819,9 @@ func (l *MPLSLabelStack) DecodeFromBytes(data []byte, options ...*MarshallingOpt
 	}
 
 	if !foundBottom {
+		if len(labels) > 0 {
+			return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "MPLS label stack missing bottom-of-stack bit")
+		}
 		l.Labels = []uint32{}
 		return nil
 	}
@@ -1827,6 +1830,9 @@ func (l *MPLSLabelStack) DecodeFromBytes(data []byte, options ...*MarshallingOpt
 }
 
 func (l *MPLSLabelStack) Serialize(options ...*MarshallingOption) ([]byte, error) {
+	if len(l.Labels) == 0 {
+		return nil, fmt.Errorf("empty MPLS label stack")
+	}
 	buf := make([]byte, len(l.Labels)*3)
 	for i, label := range l.Labels {
 		if label == WITHDRAW_LABEL {
@@ -1926,7 +1932,7 @@ func (l *LabeledVPNIPAddrPrefix) decodeFromBytes(data []byte, addrlen int, optio
 		return err
 	}
 	if bits-8*l.Labels.Len() < 0 {
-		l.Labels.Labels = []uint32{}
+		return NewMessageError(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST), nil, "LabeledVPNIPAddrPrefix declared length too short for label stack")
 	}
 	if len(data) < l.Labels.Len()+8 {
 		return NewMessageError(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST), nil, "LabeledVPNIPAddrPrefix not enough data")
@@ -2025,7 +2031,7 @@ func (l *LabeledIPAddrPrefix) decodeFromBytes(data []byte, addrlen int, options 
 	}
 
 	if bits-8*l.Labels.Len() < 0 {
-		l.Labels.Labels = []uint32{}
+		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "LabeledIPAddrPrefix declared length too short for label stack")
 	}
 	if len(data) < l.Labels.Len() {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "LabeledIPAddrPrefix not enough data")
