@@ -3132,16 +3132,19 @@ func UnmarshalSRSegments(s []*api.TunnelEncapSubTLVSRSegmentList_Segment) ([]bgp
 				},
 				Label: v.A.Label,
 			}
-			if v.A.Flags.VFlag {
+			// Flags is an optional sub-message; chain through the
+			// generated nil-safe getters so that an unset Flags does
+			// not panic with a nil pointer dereference.
+			if v.A.GetFlags().GetVFlag() {
 				seg.Flags += 0x80
 			}
-			if v.A.Flags.AFlag {
+			if v.A.GetFlags().GetAFlag() {
 				seg.Flags += 0x40
 			}
-			if v.A.Flags.SFlag {
+			if v.A.GetFlags().GetSFlag() {
 				seg.Flags += 0x20
 			}
-			if v.A.Flags.BFlag {
+			if v.A.GetFlags().GetBFlag() {
 				seg.Flags += 0x10
 			}
 			segments[i] = seg
@@ -3153,16 +3156,16 @@ func UnmarshalSRSegments(s []*api.TunnelEncapSubTLVSRSegmentList_Segment) ([]bgp
 				},
 				SID: v.B.GetSid(),
 			}
-			if v.B.Flags.VFlag {
+			if v.B.GetFlags().GetVFlag() {
 				seg.Flags += 0x80
 			}
-			if v.B.Flags.AFlag {
+			if v.B.GetFlags().GetAFlag() {
 				seg.Flags += 0x40
 			}
-			if v.B.Flags.SFlag {
+			if v.B.GetFlags().GetSFlag() {
 				seg.Flags += 0x20
 			}
-			if v.B.Flags.BFlag {
+			if v.B.GetFlags().GetBFlag() {
 				seg.Flags += 0x10
 			}
 			if v.B.EndpointBehaviorStructure != nil {
