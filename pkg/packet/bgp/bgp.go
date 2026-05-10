@@ -4928,7 +4928,7 @@ type LsNodeNLRI struct {
 
 func (l *LsNodeNLRI) DecodeFromBytes(data []byte) error {
 	if err := l.LsNLRI.DecodeFromBytes(data); err != nil {
-		return nil
+		return err
 	}
 
 	tlv := data[lsNLRIHdrLen:]
@@ -5141,7 +5141,7 @@ func (l *LsLinkNLRI) String() string {
 
 func (l *LsLinkNLRI) DecodeFromBytes(data []byte) error {
 	if err := l.LsNLRI.DecodeFromBytes(data); err != nil {
-		return nil
+		return err
 	}
 
 	tlv := data[lsNLRIHdrLen:]
@@ -5325,7 +5325,7 @@ func (l *LsPrefixV4NLRI) String() string {
 
 func (l *LsPrefixV4NLRI) DecodeFromBytes(data []byte) error {
 	if err := l.LsNLRI.DecodeFromBytes(data); err != nil {
-		return nil
+		return err
 	}
 
 	tlv := data[lsNLRIHdrLen:]
@@ -5502,7 +5502,7 @@ func (l *LsPrefixV6NLRI) String() string {
 
 func (l *LsPrefixV6NLRI) DecodeFromBytes(data []byte) error {
 	if err := l.LsNLRI.DecodeFromBytes(data); err != nil {
-		return nil
+		return err
 	}
 
 	tlv := data[lsNLRIHdrLen:]
@@ -5732,7 +5732,7 @@ func (l *LsSrv6SIDNLRI) String() string {
 
 func (l *LsSrv6SIDNLRI) DecodeFromBytes(data []byte) error {
 	if err := l.LsNLRI.DecodeFromBytes(data); err != nil {
-		return nil
+		return err
 	}
 
 	tlvs := data[lsNLRIHdrLen:]
@@ -10206,7 +10206,10 @@ func (l *LsAddrPrefix) decodeFromBytes(data []byte, options ...*MarshallingOptio
 	}
 
 	if l.NLRI != nil {
-		return l.NLRI.DecodeFromBytes(data[4:])
+		if len(data) < 4+int(l.Length) {
+			return malformedAttrListErr("Malformed BGP-LS NLRI: declared length exceeds available data")
+		}
+		return l.NLRI.DecodeFromBytes(data[4 : 4+int(l.Length)])
 	}
 
 	return nil
