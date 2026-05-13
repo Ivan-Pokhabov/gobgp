@@ -3939,3 +3939,63 @@ func TestNewSingleAsPathMatch(t *testing.T) {
 	r = NewSingleAsPathMatch("^65100$")
 	assert.Equal(t, r.mode, ONLY)
 }
+
+func TestExtCommunityConditionAnyFastPath(t *testing.T) {
+	makeRT := func(as uint16, la uint32) bgp.ExtendedCommunityInterface {
+		return bgp.NewTwoOctetAsSpecificExtended(bgp.EC_SUBTYPE_ROUTE_TARGET, as, la, true)
+	}
+	makeExtPath := func(ecs ...bgp.ExtendedCommunityInterface) *Path {
+		p := netip.MustParsePrefix("10.0.0.0/24")
+		nlri, _ := bgp.NewIPAddrPrefix(p)
+		nh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.0.1"))
+		return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false,
+			[]bgp.PathAttributeInterface{
+				bgp.NewPathAttributeOrigin(0), nh,
+				bgp.NewPathAttributeExtendedCommunities(ecs),
+			}, time.Now(), false)
+	}
+	makeCond := func(option MatchOption, patterns ...string) *ExtCommunityCondition {
+		s, err := NewExtCommunitySet(oc.ExtCommunitySet{
+			ExtCommunitySetName: "test",
+			ExtCommunityList:    patterns,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &ExtCommunityCondition{set: s, option: option}
+	}
+
+	cases := []struct {
+		name    string
+		cond    *ExtCommunityCondition
+		path    *Path
+		want    bool
+	}{
+		// Exact mode
+		{"exact/hit", makeCond(MATCH_OPTION_ANY, "rt:65000:100"), makeExtPath(makeRT(65000, 100)), true},
+		{"exact/miss", makeCond(MATCH_OPTION_ANY, "rt:65000:100"), makeExtPath(makeRT(65000, 200)), false},
+		// ASOnly mode (^ASN:.*$)
+		{"asonly/hit", makeCond(MATCH_OPTION_ANY, "rt:^65000:.*$"), makeExtPath(makeRT(65000, 999)), true},
+		{"asonly/miss", makeCond(MATCH_OPTION_ANY, "rt:^65000:.*$"), makeExtPath(makeRT(65001, 999)), false},
+		// ASBitmap mode (^ASN:(v1|v2)$)
+		{"asbitmap/hit", makeCond(MATCH_OPTION_ANY, `rt:^65000:(100|200)$`), makeExtPath(makeRT(65000, 200)), true},
+		{"asbitmap/miss", makeCond(MATCH_OPTION_ANY, `rt:^65000:(100|200)$`), makeExtPath(makeRT(65000, 300)), false},
+		// LocalBitmap mode (^\d+:LOCAL$)
+		{"localbitmap/hit", makeCond(MATCH_OPTION_ANY, `rt:^\d+:100$`), makeExtPath(makeRT(65001, 100)), true},
+		{"localbitmap/miss", makeCond(MATCH_OPTION_ANY, `rt:^\d+:100$`), makeExtPath(makeRT(65001, 200)), false},
+		// INVERT
+		{"invert/nohit", makeCond(MATCH_OPTION_INVERT, "rt:65000:100"), makeExtPath(makeRT(65001, 999)), true},
+		{"invert/hit", makeCond(MATCH_OPTION_INVERT, "rt:65000:100"), makeExtPath(makeRT(65000, 100)), false},
+		// Multiple patterns — any must match
+		{"multi/first", makeCond(MATCH_OPTION_ANY, "rt:65000:100", "rt:65001:200"), makeExtPath(makeRT(65000, 100)), true},
+		{"multi/second", makeCond(MATCH_OPTION_ANY, "rt:65000:100", "rt:65001:200"), makeExtPath(makeRT(65001, 200)), true},
+		{"multi/none", makeCond(MATCH_OPTION_ANY, "rt:65000:100", "rt:65001:200"), makeExtPath(makeRT(65099, 1)), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.cond.Evaluate(tc.path, nil)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
