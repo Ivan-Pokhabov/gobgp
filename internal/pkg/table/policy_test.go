@@ -3376,6 +3376,50 @@ func TestParseCommunityRegexp(t *testing.T) {
 	assert.Equal(t, l6, r6.String())
 }
 
+func TestDescribeCommunityMatchPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{name: "exact", pattern: "65000:100", want: "exact"},
+		{name: "fixed-as-wildcard", pattern: "^65000:.*$", want: "fixed-as-wildcard"},
+		{name: "fixed-as-bitmap", pattern: "^65000:(100|200)$", want: "fixed-as-bitmap"},
+		{name: "local-independent-bitmap", pattern: `^\d+:(100|200)$`, want: "local-independent-bitmap"},
+		{name: "regexp", pattern: "^65[0-9]+:100$", want: "regexp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := DescribeCommunityMatchPattern(tt.pattern)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDescribeExtCommunityMatchPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{name: "exact", pattern: "rt:65000:100", want: "exact"},
+		{name: "as-only", pattern: "rt:^65000:.*$", want: "as-only"},
+		{name: "as-bitmap", pattern: "rt:^65000:(100|200)$", want: "as-bitmap"},
+		{name: "local-bitmap", pattern: `rt:^\d+:(100|200)$`, want: "local-bitmap"},
+		{name: "regexp", pattern: "rt:^65[0-9]+:100$", want: "regexp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := DescribeExtCommunityMatchPattern(tt.pattern)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestLocalPrefAction(t *testing.T) {
 	action, err := NewLocalPrefAction(10)
 	assert.NoError(t, err)

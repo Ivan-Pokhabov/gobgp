@@ -112,16 +112,26 @@ func prettyString(v any) string {
 	return "unknown"
 }
 
-func formatDefinedSet(head bool, typ string, indent int, list []*api.DefinedSet) string {
+func formatDefinedSet(head bool, typ string, indent int, list []*api.DefinedSet, showMatchType bool) string {
 	if len(list) == 0 {
 		return "Nothing defined yet\n"
 	}
+	showMatchType = showMatchType && (typ == "COMMUNITY" || typ == "EXT-COMMUNITY")
 	buff := bytes.NewBuffer(make([]byte, 0, 64))
 	sIndent := strings.Repeat(" ", indent)
 	maxNameLen := 0
+	maxValueLen := len(typ)
 	for _, s := range list {
 		if len(s.GetName()) > maxNameLen {
 			maxNameLen = len(s.GetName())
+		}
+		if showMatchType {
+			for _, x := range s.GetList() {
+				x = definedSetDisplayValue(typ, x)
+				if len(x) > maxValueLen {
+					maxValueLen = len(x)
+				}
+			}
 		}
 	}
 	if head {
@@ -130,8 +140,15 @@ func formatDefinedSet(head bool, typ string, indent int, list []*api.DefinedSet)
 		}
 	}
 	format := fmt.Sprintf("%%-%ds  %%s\n", maxNameLen)
+	if showMatchType {
+		format = fmt.Sprintf("%%-%ds  %%-%ds  %%s\n", maxNameLen, maxValueLen)
+	}
 	if head {
-		fmt.Fprintf(buff, format, "NAME", typ)
+		if showMatchType {
+			fmt.Fprintf(buff, format, "NAME", typ, "MATCH")
+		} else {
+			fmt.Fprintf(buff, format, "NAME", typ)
+		}
 	}
 	for _, s := range list {
 		if typ == "PREFIX" {
@@ -151,22 +168,62 @@ func formatDefinedSet(head bool, typ string, indent int, list []*api.DefinedSet)
 		} else {
 			l := s.GetList()
 			if len(l) == 0 {
-				fmt.Fprintf(buff, format, s.GetName(), "")
+				if showMatchType {
+					fmt.Fprintf(buff, format, s.GetName(), "", "")
+				} else {
+					fmt.Fprintf(buff, format, s.GetName(), "")
+				}
 			}
 			for i, x := range l {
-				if typ == "COMMUNITY" || typ == "EXT-COMMUNITY" || typ == "LARGE-COMMUNITY" {
-					x = _regexpCommunity.ReplaceAllString(x, "$1")
+				x = definedSetDisplayValue(typ, x)
+				matchType := ""
+				if showMatchType {
+					matchType = definedSetMatchType(typ, x)
 				}
 				if i == 0 {
-					fmt.Fprintf(buff, format, s.GetName(), x)
+					if showMatchType {
+						fmt.Fprintf(buff, format, s.GetName(), x, matchType)
+					} else {
+						fmt.Fprintf(buff, format, s.GetName(), x)
+					}
 				} else {
 					fmt.Fprint(buff, sIndent)
-					fmt.Fprintf(buff, format, "", x)
+					if showMatchType {
+						fmt.Fprintf(buff, format, "", x, matchType)
+					} else {
+						fmt.Fprintf(buff, format, "", x)
+					}
 				}
 			}
 		}
 	}
 	return buff.String()
+}
+
+func definedSetDisplayValue(typ string, value string) string {
+	if typ == "COMMUNITY" || typ == "EXT-COMMUNITY" || typ == "LARGE-COMMUNITY" {
+		return _regexpCommunity.ReplaceAllString(value, "$1")
+	}
+	return value
+}
+
+func definedSetMatchType(typ string, value string) string {
+	var (
+		matchType string
+		err       error
+	)
+	switch typ {
+	case "COMMUNITY":
+		matchType, err = table.DescribeCommunityMatchPattern(value)
+	case "EXT-COMMUNITY":
+		matchType, err = table.DescribeExtCommunityMatchPattern(value)
+	default:
+		return ""
+	}
+	if err != nil {
+		return "invalid"
+	}
+	return matchType
 }
 
 func showDefinedSet(v string, args []string) error {
@@ -227,17 +284,17 @@ func showDefinedSet(v string, args []string) error {
 	var output string
 	switch v {
 	case cmdPrefix:
-		output = formatDefinedSet(true, "PREFIX", 0, m)
+		output = formatDefinedSet(true, "PREFIX", 0, m, false)
 	case cmdNeighbor:
-		output = formatDefinedSet(true, "ADDRESS", 0, m)
+		output = formatDefinedSet(true, "ADDRESS", 0, m, false)
 	case cmdAspath:
-		output = formatDefinedSet(true, "AS-PATH", 0, m)
+		output = formatDefinedSet(true, "AS-PATH", 0, m, false)
 	case cmdCommunity:
-		output = formatDefinedSet(true, "COMMUNITY", 0, m)
+		output = formatDefinedSet(true, "COMMUNITY", 0, m, globalOpts.Debug)
 	case cmdExtcommunity:
-		output = formatDefinedSet(true, "EXT-COMMUNITY", 0, m)
+		output = formatDefinedSet(true, "EXT-COMMUNITY", 0, m, globalOpts.Debug)
 	case cmdLargecommunity:
-		output = formatDefinedSet(true, "LARGE-COMMUNITY", 0, m)
+		output = formatDefinedSet(true, "LARGE-COMMUNITY", 0, m, false)
 	}
 	fmt.Print(output)
 	return nil

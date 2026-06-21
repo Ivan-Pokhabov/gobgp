@@ -1047,6 +1047,23 @@ const (
 	communityMatchRegexp
 )
 
+func (m communityMatchMode) String() string {
+	switch m {
+	case communityMatchExact:
+		return "exact"
+	case communityMatchFixedASWildcard:
+		return "fixed-as-wildcard"
+	case communityMatchFixedASBitmap:
+		return "fixed-as-bitmap"
+	case communityMatchLocalIndependent:
+		return "local-independent-bitmap"
+	case communityMatchRegexp:
+		return "regexp"
+	default:
+		return fmt.Sprintf("unknown(%d)", m)
+	}
+}
+
 const communityMatcherNoListIdx = -1
 
 // communityMatcher is a compiled BGP standard-community pattern.
@@ -1258,6 +1275,25 @@ func buildCommunityMatchers(list []*regexp.Regexp) ([]communityMatcher, communit
 	return ms, buildCommunityMatcherBitmaps(ms)
 }
 
+func classifyCommunityMatchMode(re *regexp.Regexp) communityMatchMode {
+	s := re.String()
+	if inner, ok := anchoredBody(s); ok {
+		if _, _, ok2 := parseExactASColonLocal(inner, 16); ok2 {
+			return communityMatchExact
+		}
+	}
+	if _, ok := extractLiteralASN(s); ok {
+		if isWildcardLocal(s) {
+			return communityMatchFixedASWildcard
+		}
+		return communityMatchFixedASBitmap
+	}
+	if _, ok := tryWildcardASNBitmap(re); ok {
+		return communityMatchLocalIndependent
+	}
+	return communityMatchRegexp
+}
+
 // asBitmapEntry pairs an AS number with its combined OR-bitmap for fast lookup.
 type asBitmapEntry struct {
 	asn uint16
@@ -1456,6 +1492,22 @@ func ParseExtCommunityRegexp(arg string) (bgp.ExtendedCommunityAttrSubType, *reg
 	return subtype, exp, err
 }
 
+func DescribeCommunityMatchPattern(arg string) (string, error) {
+	exp, err := ParseCommunityRegexp(arg)
+	if err != nil {
+		return "", err
+	}
+	return classifyCommunityMatchMode(exp).String(), nil
+}
+
+func DescribeExtCommunityMatchPattern(arg string) (string, error) {
+	subtype, exp, err := ParseExtCommunityRegexp(arg)
+	if err != nil {
+		return "", err
+	}
+	return compileExtCommunityMatcher(subtype, exp).mode.String(), nil
+}
+
 func NewCommunitySet(c oc.CommunitySet) (*CommunitySet, error) {
 	name := c.CommunitySetName
 	if name == "" {
@@ -1521,6 +1573,23 @@ const (
 	extCommMatchLocalBitmap
 	extCommMatchRegexp
 )
+
+func (m extCommunityMatchMode) String() string {
+	switch m {
+	case extCommMatchExact:
+		return "exact"
+	case extCommMatchASOnly:
+		return "as-only"
+	case extCommMatchASBitmap:
+		return "as-bitmap"
+	case extCommMatchLocalBitmap:
+		return "local-bitmap"
+	case extCommMatchRegexp:
+		return "regexp"
+	default:
+		return fmt.Sprintf("unknown(%d)", m)
+	}
+}
 
 // extCommunityMatcher is a compiled EC pattern. Follows the same promotion strategy as
 // communityMatcher: anchored decimal exact → AS-only wildcard → fixed/wildcard-AS bitmap →
