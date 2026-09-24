@@ -18,10 +18,87 @@ package server
 import (
 	"log/slog"
 	"slices"
+	"time"
 
+	"github.com/osrg/gobgp/v4/internal/pkg/table"
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
+
+// runLocalRestartCheck must not be called from a management operation. Call it
+// asynchronously from FSM callbacks: management operations wait for
+// in-flight UPDATE/PeerDown processing and serialize initial dumps with updates.
+func (s *BgpServer) runLocalRestartCheck() {
+	_ = s.mgmtOperation(func() error {
+		s.processLocalRestartLocked(time.Now())
+		return nil
+	}, false)
+}
+
+func (s *BgpServer) processLocalRestartLocked(now time.Time) {
+	if s.localRestartTimer != nil {
+		s.localRestartTimer.Stop()
+		s.localRestartTimer = nil
+	}
+	var deadline time.Time
+	waitUntil := func(d time.Time) {
+		if deadline.IsZero() || d.Before(deadline) {
+			deadline = d
+		}
+	}
+	allEOR := true
+	pending := false
+	var restarting []*peer
+	for _, p := range s.neighborMap {
+		conf := p.fsm.pConf.ReadOnly()
+		local := conf.GracefulRestart.State.LocalRestarting
+		if conf.State.SessionState != oc.SESSION_STATE_ESTABLISHED {
+			if local && conf.GracefulRestart.Config.Enabled && conf.Transport.Config.PassiveMode &&
+				now.Before(p.localRestartDeadline) && p.hasConfiguredGRFamily() {
+				allEOR = false
+				waitUntil(p.localRestartDeadline)
+			}
+			continue
+		}
+		if !p.localRestartEORWaitComplete() {
+			allEOR = false
+		}
+		if !local {
+			continue
+		}
+		restarting = append(restarting, p)
+	}
+	// RFC 4724 section 4.1: wait for EOR or the selection deferral timeout.
+	// This implementation defers export only, not route selection or FIB updates.
+	for _, p := range restarting {
+		if !allEOR && (p.localRestartDeadline.IsZero() || now.Before(p.localRestartDeadline)) {
+			pending = true
+			if !p.localRestartDeadline.IsZero() {
+				waitUntil(p.localRestartDeadline)
+			}
+			continue
+		}
+		p.fsm.lock.Lock()
+		conf := p.fsm.pConf.ReadCopy()
+		conf.GracefulRestart.State.LocalRestarting = false
+		p.fsm.pConf.Update(&conf)
+		p.fsm.lock.Unlock()
+		s.getBestFromLocalCallback(p, p.negotiatedRFList(), true, true, func(paths, _ []*table.Path) {
+			if len(paths) > 0 {
+				p.updateRoutes(paths...)
+				sendfsmOutgoingMsg(p, paths)
+			}
+		})
+		reason := "eor"
+		if !allEOR {
+			reason = "deferral"
+		}
+		p.fsm.logger.Info("local restart initial routes queued", slog.String("Reason", reason), slog.Time("Deadline", p.localRestartDeadline))
+	}
+	if !deadline.IsZero() && pending {
+		s.localRestartTimer = time.AfterFunc(time.Until(deadline), s.runLocalRestartCheck)
+	}
+}
 
 func (s *BgpServer) rtcDeferralCallback(p *peer) func() {
 	conf := p.fsm.pConf.ReadOnly()

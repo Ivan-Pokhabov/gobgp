@@ -8866,8 +8866,11 @@ type GracefulRestart struct {
 	PeerRestarting      bool                   `protobuf:"varint,9,opt,name=peer_restarting,json=peerRestarting,proto3" json:"peer_restarting,omitempty"`
 	LocalRestarting     bool                   `protobuf:"varint,10,opt,name=local_restarting,json=localRestarting,proto3" json:"local_restarting,omitempty"`
 	Mode                string                 `protobuf:"bytes,11,opt,name=mode,proto3" json:"mode,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Seconds to wait for a passive peer to connect during local restart.
+	// Zero disables the connection wait; this is not the EOR deferral timer.
+	RouteSelectionDelayTime uint32 `protobuf:"varint,13,opt,name=route_selection_delay_time,json=routeSelectionDelayTime,proto3" json:"route_selection_delay_time,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *GracefulRestart) Reset() {
@@ -8975,6 +8978,13 @@ func (x *GracefulRestart) GetMode() string {
 		return x.Mode
 	}
 	return ""
+}
+
+func (x *GracefulRestart) GetRouteSelectionDelayTime() uint32 {
+	if x != nil {
+		return x.RouteSelectionDelayTime
+	}
+	return 0
 }
 
 type MpGracefulRestartConfig struct {
@@ -14541,7 +14551,7 @@ const file_api_gobgp_proto_rawDesc = "" +
 	"\x06ip_tos\x18\t \x01(\rR\x05ipTos\"f\n" +
 	"\vRouteServer\x12.\n" +
 	"\x13route_server_client\x18\x01 \x01(\bR\x11routeServerClient\x12'\n" +
-	"\x0fsecondary_route\x18\x02 \x01(\bR\x0esecondaryRoute\"\xb4\x03\n" +
+	"\x0fsecondary_route\x18\x02 \x01(\bR\x0esecondaryRoute\"\xf1\x03\n" +
 	"\x0fGracefulRestart\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12!\n" +
 	"\frestart_time\x18\x02 \x01(\rR\vrestartTime\x12\x1f\n" +
@@ -14555,7 +14565,8 @@ const file_api_gobgp_proto_rawDesc = "" +
 	"\x0fpeer_restarting\x18\t \x01(\bR\x0epeerRestarting\x12)\n" +
 	"\x10local_restarting\x18\n" +
 	" \x01(\bR\x0flocalRestarting\x12\x12\n" +
-	"\x04mode\x18\v \x01(\tR\x04mode\"3\n" +
+	"\x04mode\x18\v \x01(\tR\x04mode\x12;\n" +
+	"\x1aroute_selection_delay_time\x18\r \x01(\rR\x17routeSelectionDelayTime\"3\n" +
 	"\x17MpGracefulRestartConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\"\xde\x01\n" +
 	"\x16MpGracefulRestartState\x12\x18\n" +

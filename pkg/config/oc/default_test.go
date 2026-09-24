@@ -15,6 +15,7 @@
 package oc
 
 import (
+	"fmt"
 	"net/netip"
 	"testing"
 
@@ -356,4 +357,21 @@ func TestOverwriteNeighborConfigWithPeerGroupKeepsConfiguredZeroValues(t *testin
 	assert.Equal(t, "", n.Config.Description)
 	assert.False(t, n.Config.RouteFlapDamping)
 	assert.Equal(t, "group password", n.Config.AuthPassword)
+}
+
+func TestOverwriteNeighborGracefulRestartConnectionWindow(t *testing.T) {
+	for _, value := range []uint32{0, 5} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			registerConfiguredFields(t, testNeighborAddress, map[string]any{
+				"config":           map[string]any{"neighbor-address": testNeighborAddress, "peer-group": "g"},
+				"graceful-restart": map[string]any{"config": map[string]any{"route-selection-delay-time": value}},
+			})
+			n := newNeighborForTcpAoInheritanceTest()
+			n.GracefulRestart.Config.RouteSelectionDelayTime = value
+			pg := &PeerGroup{GracefulRestart: GracefulRestart{Config: GracefulRestartConfig{RouteSelectionDelayTime: 30, DeferralTime: 120}}}
+			require.NoError(t, OverwriteNeighborConfigWithPeerGroup(n, pg))
+			require.Equal(t, value, n.GracefulRestart.Config.RouteSelectionDelayTime)
+			require.Equal(t, uint16(120), n.GracefulRestart.Config.DeferralTime)
+		})
+	}
 }

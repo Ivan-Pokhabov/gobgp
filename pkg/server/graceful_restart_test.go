@@ -75,6 +75,7 @@ func newLocalRestartTestPeer(t *testing.T, s *BgpServer, addr string) *peer {
 	p.fsm.capMap[bgp.BGP_CAP_GRACEFUL_RESTART] = []bgp.ParameterCapabilityInterface{bgp.NewCapGracefulRestart(false, false, 60, nil)}
 	p.fsm.familyMap.Store(map[bgp.Family]bgp.BGPAddPathMode{bgp.RF_IPv4_UC: bgp.BGP_ADD_PATH_NONE})
 	setLocalRestartTestState(p, bgp.BGP_FSM_ESTABLISHED)
+	p.localRestartDeadline = time.Now().Add(time.Hour)
 	s.neighborMap[conf.State.NeighborAddress] = p
 	return p
 }
@@ -124,6 +125,214 @@ func requireLocalRestartDump(t *testing.T, p *peer, withRoute bool) {
 	}
 }
 
+func TestLocalRestartIndividualDeferral(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a, b *peer
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		b = newLocalRestartTestPeer(t, s, "192.0.2.2")
+		addLocalRestartTestRoute(t, s)
+		a.localRestartDeadline = time.Now().Add(-time.Second)
+		s.processLocalRestartLocked(time.Now())
+		require.False(t, a.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		require.True(t, b.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		// A's timeout does not make its still-missing EOR irrelevant to others.
+		markTestEORReceived(b)
+		s.processLocalRestartLocked(time.Now())
+		require.True(t, b.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		b.localRestartDeadline = time.Now().Add(-time.Second)
+		s.processLocalRestartLocked(time.Now())
+	})
+	requireLocalRestartDump(t, a, true)
+	requireLocalRestartDump(t, b, true)
+}
+
+func TestLocalRestartLatePeerKeepsOpenRestartBit(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a, late *peer
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		late = newLocalRestartTestPeer(t, s, "192.0.2.2")
+		setLocalRestartTestState(late, bgp.BGP_FSM_ACTIVE)
+		late.localRestartDeadline = time.Now().Add(-time.Second)
+		markTestEORReceived(a)
+		s.processLocalRestartLocked(time.Now())
+		require.True(t, late.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		conf := late.fsm.pConf.ReadCopy()
+		found := false
+		for _, cap := range capabilitiesFromConfig(&conf) {
+			if gr, ok := cap.(*bgp.CapGracefulRestart); ok {
+				found = true
+				require.NotZero(t, gr.Flags&0x08)
+			}
+		}
+		require.True(t, found)
+		// Late arrival receives the current RIB, including routes added after A's dump.
+		addLocalRestartTestRoute(t, s)
+		setLocalRestartTestState(late, bgp.BGP_FSM_ESTABLISHED)
+		late.localRestartDeadline = time.Now().Add(time.Hour)
+		s.processLocalRestartLocked(time.Now())
+		require.True(t, late.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		markTestEORReceived(late)
+		s.processLocalRestartLocked(time.Now())
+	})
+	requireLocalRestartDump(t, a, false)
+	requireLocalRestartDump(t, late, true)
+}
+
+func TestLocalRestartReconnectAndNewPeer(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a, b, c *peer
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		b = newLocalRestartTestPeer(t, s, "192.0.2.2")
+		setLocalRestartTestState(b, bgp.BGP_FSM_ACTIVE)
+		b.localRestartDeadline = time.Time{}
+		s.processLocalRestartLocked(time.Now())
+		setLocalRestartTestState(b, bgp.BGP_FSM_ESTABLISHED)
+		b.localRestartDeadline = time.Now().Add(time.Hour)
+		markTestEORReceived(a)
+		s.processLocalRestartLocked(time.Now())
+		require.True(t, a.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting, "reconnected B blocks A again")
+		markTestEORReceived(b)
+		s.processLocalRestartLocked(time.Now())
+		c = newLocalRestartTestPeer(t, s, "192.0.2.3")
+		s.processLocalRestartLocked(time.Now())
+		require.True(t, c.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		markTestEORReceived(c)
+		s.processLocalRestartLocked(time.Now())
+	})
+	for _, p := range []*peer{a, b, c} {
+		requireLocalRestartDump(t, p, false)
+	}
+	select {
+	case <-a.fsm.outgoingCh.Out():
+		t.Fatal("duplicate dump to released peer")
+	case <-time.After(10 * time.Millisecond):
+	}
+}
+
+func TestLocalRestartTimer(t *testing.T) {
+	for _, connection := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deferral", true: "connection"}[connection], func(t *testing.T) {
+			s := newLocalRestartTestServer(t)
+			var a *peer
+			runLocalRestartTestOp(t, s, func() {
+				a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+				if connection {
+					markTestEORReceived(a)
+					b := newLocalRestartTestPeer(t, s, "192.0.2.2")
+					setLocalRestartTestState(b, bgp.BGP_FSM_ACTIVE)
+					conf := b.fsm.pConf.ReadCopy()
+					conf.Transport.Config.PassiveMode = true
+					b.fsm.pConf.Update(&conf)
+					b.localRestartDeadline = time.Now().Add(20 * time.Millisecond)
+				} else {
+					a.localRestartDeadline = time.Now().Add(20 * time.Millisecond)
+				}
+				s.processLocalRestartLocked(time.Now())
+				require.True(t, a.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+			})
+			requireLocalRestartDump(t, a, false)
+			runLocalRestartTestOp(t, s, func() { require.Nil(t, s.localRestartTimer) })
+		})
+	}
+}
+
+func TestLocalRestartFSMEvents(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a, b *peer
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		b = newLocalRestartTestPeer(t, s, "192.0.2.2")
+		setLocalRestartTestState(a, bgp.BGP_FSM_OPENCONFIRM)
+		markTestEORReceived(b)
+	})
+	s.handleFSMMessage(a, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_ESTABLISHED, StateReason: &fsmStateReason{Type: fsmNewConnection}})
+	require.Equal(t, bgp.BGP_FSM_ESTABLISHED, a.State())
+	s.handleFSMMessage(a, &fsmMsg{MsgType: fsmMsgBGPMessage, MsgData: bgp.NewEndOfRib(bgp.RF_IPv4_UC), timestamp: time.Now()})
+	requireLocalRestartDump(t, a, false)
+	requireLocalRestartDump(t, b, false)
+}
+
+func TestLocalRestartPeerDownCompletesBeforeDump(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a, b *peer
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		b = newLocalRestartTestPeer(t, s, "192.0.2.2")
+		markTestEORReceived(a)
+		s.processLocalRestartLocked(time.Now())
+	})
+	b.routeRefreshInProgress.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.handleFSMMessage(b, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_IDLE, StateReason: &fsmStateReason{Type: fsmReadFailed}})
+	}()
+	// Cleanup is blocked even though the down state is already visible.
+	func() {
+		defer b.routeRefreshInProgress.Unlock()
+		require.Eventually(t, func() bool { return b.State() == bgp.BGP_FSM_IDLE }, time.Second, time.Millisecond)
+		require.True(t, a.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+	}()
+	<-done
+	requireLocalRestartDump(t, a, false)
+	require.True(t, b.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+}
+
+func TestLocalRestartNegotiatedFamiliesAndHelper(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a *peer
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		markTestEORReceived(a)
+		conf := a.fsm.pConf.ReadCopy()
+		conf.GracefulRestart.State.PeerRestarting = true
+		// Configured but not negotiated: no IPv6 EOR should be required or sent.
+		conf.AfiSafis = append(conf.AfiSafis, oc.AfiSafi{
+			State:             oc.AfiSafiState{Family: bgp.RF_IPv6_UC},
+			MpGracefulRestart: oc.MpGracefulRestart{Config: oc.MpGracefulRestartConfig{Enabled: true}},
+		})
+		a.fsm.pConf.Update(&conf)
+		s.processLocalRestartLocked(time.Now())
+		require.True(t, a.fsm.pConf.ReadOnly().GracefulRestart.State.PeerRestarting, "local completion must not finish remote helper")
+	})
+	requireLocalRestartDump(t, a, false)
+}
+
+func TestLocalRestartDumpThenWithdrawal(t *testing.T) {
+	s := newLocalRestartTestServer(t)
+	var a *peer
+	var route *table.Path
+	runLocalRestartTestOp(t, s, func() {
+		a = newLocalRestartTestPeer(t, s, "192.0.2.1")
+		route = addLocalRestartTestRoute(t, s)
+		markTestEORReceived(a)
+		setLocalRestartTestState(a, bgp.BGP_FSM_OPENCONFIRM)
+	})
+	// Do not simulate the FSM's post-callback state.Store: PeerUp must publish
+	// Established itself before asynchronous completion can enable live updates.
+	s.handleFSMMessage(a, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_ESTABLISHED,
+		StateReason: &fsmStateReason{Type: fsmNewConnection}})
+	require.Equal(t, bgp.BGP_FSM_ESTABLISHED, a.State())
+	requireLocalRestartDump(t, a, true)
+	runLocalRestartTestOp(t, s, func() {
+		require.False(t, a.fsm.pConf.ReadOnly().GracefulRestart.State.LocalRestarting)
+		require.Nil(t, s.localRestartTimer)
+		s.propagateUpdate(nil, []*table.Path{route.Clone(true)})
+	})
+	select {
+	case msg := <-a.fsm.outgoingCh.Out():
+		paths := msg.(*fsmOutgoingMsg).Paths
+		require.Len(t, paths, 1)
+		require.True(t, paths[0].IsWithdraw)
+		require.Equal(t, "203.0.113.0/24", paths[0].GetNlri().String())
+	case <-time.After(time.Second):
+		t.Fatal("withdrawal after initial dump was lost")
+	}
+}
+
 func TestLocalRestartEORCapabilityPredicate(t *testing.T) {
 	s := newLocalRestartTestServer(t)
 	runLocalRestartTestOp(t, s, func() {
@@ -159,9 +368,8 @@ func TestLocalRestartSecondaryDumpEOR(t *testing.T) {
 					addLocalRestartTestRoute(t, s)
 				}
 				markTestEORReceived(p)
-				setLocalRestartTestState(p, bgp.BGP_FSM_OPENCONFIRM)
+				s.processLocalRestartLocked(time.Now())
 			})
-			s.handleFSMMessage(p, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_ESTABLISHED, StateReason: &fsmStateReason{Type: fsmNewConnection}})
 			requireLocalRestartDump(t, p, populated)
 		})
 	}
@@ -407,9 +615,8 @@ func TestLocalRestartSecondaryReconnectDump(t *testing.T) {
 		s.rsRib = s.globalRib
 		addLocalRestartTestRoute(t, s)
 		markTestEORReceived(p)
-		setLocalRestartTestState(p, bgp.BGP_FSM_OPENCONFIRM)
+		s.processLocalRestartLocked(time.Now())
 	})
-	s.handleFSMMessage(p, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_ESTABLISHED, StateReason: &fsmStateReason{Type: fsmNewConnection}})
 	requireLocalRestartDump(t, p, true)
 	s.handleFSMMessage(p, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_IDLE,
 		StateReason: &fsmStateReason{Type: fsmReadFailed}})
@@ -417,6 +624,7 @@ func TestLocalRestartSecondaryReconnectDump(t *testing.T) {
 	// The callback runs before atomic Established is published. The RIB has not changed.
 	s.handleFSMMessage(p, &fsmMsg{MsgType: fsmMsgStateChange, MsgData: bgp.BGP_FSM_ESTABLISHED,
 		StateReason: &fsmStateReason{Type: fsmNewConnection}})
+	require.Equal(t, bgp.BGP_FSM_ESTABLISHED, p.State())
 	requireLocalRestartDump(t, p, true)
 }
 

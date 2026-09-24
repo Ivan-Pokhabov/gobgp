@@ -133,32 +133,33 @@ func (d *sharedData) propagateBucket(path *table.Path) *sync.Mutex {
 }
 
 type BgpServer struct {
-	shared        *sharedData
-	apiServer     *server
-	bgpConfig     oc.Bgp
-	acceptCh      chan net.Conn
-	mgmtCh        chan *mgmtOp
-	closeCh       chan struct{}
-	policy        *table.RoutingPolicy
-	listeners     []*netutils.TCPListener
-	neighborMap   map[netip.Addr]*peer
-	rrClusterIDs  map[netip.Addr]struct{}
-	peerGroupMap  map[string]*peerGroup
-	globalRib     *table.TableManager
-	rsRib         *table.TableManager
-	roaManager    *roaManager
-	watcherMap    map[watchEventType][]*watcher
-	watcherMu     sync.RWMutex
-	zclient       *zebraClient
-	bmpManager    *bmpClientManager
-	mrtManager    *mrtManager
-	roaTable      *table.ROATable
-	uuidMap       map[string]uuid.UUID
-	bfdServer     *bfdServer
-	keychainStore *tcpAoKeychainStore
-	logger        *slog.Logger
-	logLevelVar   *slog.LevelVar
-	timingHook    FSMTimingHook
+	shared            *sharedData
+	apiServer         *server
+	bgpConfig         oc.Bgp
+	acceptCh          chan net.Conn
+	mgmtCh            chan *mgmtOp
+	closeCh           chan struct{}
+	policy            *table.RoutingPolicy
+	listeners         []*netutils.TCPListener
+	neighborMap       map[netip.Addr]*peer
+	rrClusterIDs      map[netip.Addr]struct{}
+	peerGroupMap      map[string]*peerGroup
+	localRestartTimer *time.Timer
+	globalRib         *table.TableManager
+	rsRib             *table.TableManager
+	roaManager        *roaManager
+	watcherMap        map[watchEventType][]*watcher
+	watcherMu         sync.RWMutex
+	zclient           *zebraClient
+	bmpManager        *bmpClientManager
+	mrtManager        *mrtManager
+	roaTable          *table.ROATable
+	uuidMap           map[string]uuid.UUID
+	bfdServer         *bfdServer
+	keychainStore     *tcpAoKeychainStore
+	logger            *slog.Logger
+	logLevelVar       *slog.LevelVar
+	timingHook        FSMTimingHook
 	// manage lifecycle of the server
 	isServing     atomic.Bool
 	shutdownWG    *sync.WaitGroup
@@ -1645,6 +1646,7 @@ func (s *BgpServer) stopNeighbor(peer *peer, oldState bgp.FSMState, e *fsmMsg) {
 	}
 	peer.stopFSM()
 	s.broadcastPeerState(peer, bgp.BGP_FSM_IDLE, oldState, e)
+	go s.runLocalRestartCheck()
 }
 
 func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
@@ -1674,6 +1676,8 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 
 		// PeerDown
 		if oldState == bgp.BGP_FSM_ESTABLISHED {
+			peer.localRestartDeadline = time.Time{}
+			go s.runLocalRestartCheck()
 			t := time.Now()
 			peer.fsm.lock.Lock()
 			conf := peer.fsm.pConf.ReadCopy()
@@ -1860,26 +1864,6 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 				peer.fsm.gConf.Config.RouterId, conf.Transport.State.RemoteAddress, conf.Transport.State.LocalAddress)
 			peer.peerInfo.Store(peerInfo)
 
-			neighborAddress := conf.State.NeighborAddress
-			deferralExpiredFunc := func(family bgp.Family, deferralTime time.Duration) func() {
-				//nolint: errcheck // ignore error
-				return func() {
-					s.mgmtOperation(func() error {
-						conf := peer.fsm.pConf.ReadOnly()
-						downtime := conf.Timers.State.Downtime
-						if time.Since(time.Unix(downtime, 0)) < deferralTime {
-							s.logger.Debug("soft reset skipped because downtime is less than deferral time",
-								slog.String("Topic", "Peer"),
-								slog.String("Key", peer.ID()),
-								slog.String("Family", family.String()),
-								slog.Any("Duration", deferralTime),
-								slog.Any("Downtime", downtime))
-							return nil
-						}
-						return s.softResetOut(neighborAddress.String(), family, true)
-					}, false)
-				}
-			}
 			s.reconcilePeerRestart(peer)
 			conf = peer.fsm.pConf.ReadOnly()
 
@@ -1915,57 +1899,15 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 					})
 				}
 			} else {
-				// RFC 4724 4.1
-				// Once the session between the Restarting Speaker and the Receiving
-				// Speaker is re-established, ...snip... it MUST defer route
-				// selection for an address family until it either (a) receives the
-				// End-of-RIB marker from all its peers (excluding the ones with the
-				// "Restart State" bit set in the received capability and excluding the
-				// ones that do not advertise the graceful restart capability) or (b)
-				// the Selection_Deferral_Timer referred to below has expired.
-				allEnd := func() bool {
-					for _, p := range s.neighborMap {
-						if p == peer {
-							// This peer is transitioning to ESTABLISHED inside
-							// this callback, so fsm.state.Store() has not been
-							// called yet. Apply the post-ESTABLISHED EOR check
-							// directly instead of going through receivedAllEOR().
-							if !p.localRestartEORWaitComplete() {
-								return false
-							}
-							continue
-						}
-						if !p.receivedAllEOR() {
-							return false
-						}
-					}
-					return true
-				}()
-				if allEnd {
-					for _, p := range s.neighborMap {
-						p.fsm.lock.Lock()
-						conf := p.fsm.pConf.ReadCopy()
-						peerLocalRestarting := conf.GracefulRestart.State.LocalRestarting
-						conf.GracefulRestart.State.LocalRestarting = false
-						p.fsm.pConf.Update(&conf)
-						p.fsm.lock.Unlock()
-						if !p.isGracefulRestartEnabled() && !peerLocalRestarting {
-							continue
-						}
-						s.getBestFromLocalCallback(p, p.configuredRFlist(), true, true, func(paths []*table.Path, filtered []*table.Path) {
-							if len(paths) > 0 {
-								p.updateRoutes(paths...)
-								sendfsmOutgoingMsg(p, paths)
-							}
-						})
-					}
-					peer.fsm.logger.Info("sync finished")
-				} else {
-					conf := peer.fsm.pConf.ReadOnly()
-					deferral := conf.GracefulRestart.Config.DeferralTime
-					peer.fsm.logger.Debug("Now syncing, suppress sending updates. start deferral timer", slog.Any("Duration", deferral))
-					time.AfterFunc(time.Second*time.Duration(deferral), deferralExpiredFunc(bgp.Family(0), time.Second*time.Duration(deferral)))
-				}
+				peer.localRestartDeadline = time.Now().Add(time.Duration(conf.GracefulRestart.Config.DeferralTime) * time.Second)
+				peer.fsm.logger.Debug("waiting for local restart EOR", slog.Time("Deadline", peer.localRestartDeadline))
+			}
+			// Publish after PeerUp preparation, while shared.mu is still held.
+			// Local completion takes its write lock and must see Established before
+			// enabling export, or live updates following the dump could be suppressed.
+			peer.fsm.state.Store(bgp.BGP_FSM_ESTABLISHED)
+			if !notLocalRestarting {
+				go s.runLocalRestartCheck()
 			}
 		} else if oldState == bgp.BGP_FSM_ESTABLISHED {
 			peer.fsm.lock.Lock()
@@ -2041,47 +1983,9 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 					peer.fsm.lock.Unlock()
 				}
 
-				// RFC 4724 4.1
-				// Once the session between the Restarting Speaker and the Receiving
-				// Speaker is re-established, ...snip... it MUST defer route
-				// selection for an address family until it either (a) receives the
-				// End-of-RIB marker from all its peers (excluding the ones with the
-				// "Restart State" bit set in the received capability and excluding the
-				// ones that do not advertise the graceful restart capability) or ...snip...
-
 				localRestarting := conf.GracefulRestart.State.LocalRestarting
+				go s.runLocalRestartCheck()
 				if localRestarting {
-					allEnd := func() bool {
-						for _, p := range s.neighborMap {
-							if !p.receivedAllEOR() {
-								return false
-							}
-						}
-						return true
-					}()
-					if allEnd {
-						for _, p := range s.neighborMap {
-							p.fsm.lock.Lock()
-							conf := p.fsm.pConf.ReadCopy()
-							peerLocalRestarting := conf.GracefulRestart.State.LocalRestarting
-							conf.GracefulRestart.State.LocalRestarting = false
-							p.fsm.pConf.Update(&conf)
-							p.fsm.lock.Unlock()
-							if !p.isGracefulRestartEnabled() && !peerLocalRestarting {
-								continue
-							}
-							s.getBestFromLocalCallback(p, p.negotiatedRFList(), true, true, func(paths []*table.Path, filtered []*table.Path) {
-								if len(paths) > 0 {
-									p.updateRoutes(paths...)
-									sendfsmOutgoingMsg(p, paths)
-								}
-							})
-						}
-						s.logger.Info("sync finished",
-							slog.String("Topic", "Server"),
-						)
-					}
-
 					// we don't delay non-route-target NLRIs when local-restarting
 					peer.setRtcEORWait(false)
 				}
@@ -2273,6 +2177,10 @@ func (s *BgpServer) StopBgp(ctx context.Context, r *api.StopBgpRequest) error {
 		}
 		s.keychainStore.clearAllKeychains()
 		s.bgpConfig.Global = oc.Global{}
+		if s.localRestartTimer != nil {
+			s.localRestartTimer.Stop()
+			s.localRestartTimer = nil
+		}
 		return nil
 	}, false)
 	if err != nil {

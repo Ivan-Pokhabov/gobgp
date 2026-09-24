@@ -122,8 +122,9 @@ type peer struct {
 	// bucket lock for that prefix (sharedData.propagateBucket).
 	sentPaths sync.Map
 	// map[table.PathLocalKey]struct{}
-	sendMaxPathFiltered sync.Map
-	llgrEndChs          map[bgp.Family]chan struct{} // protected by fsm.lock
+	sendMaxPathFiltered  sync.Map
+	llgrEndChs           map[bgp.Family]chan struct{} // protected by fsm.lock
+	localRestartDeadline time.Time
 	// Route Target Membership handler after import policy (for constrained VPN distribution).
 	rtmHandler *table.RouteTargetMembershipHandler
 	// Route refresh in progress, during an established session or route refresh, this need to be atomic to avoid out of order updates
@@ -146,6 +147,9 @@ func newPeer(g *oc.Global, conf *oc.Neighbor, state bgp.FSMState, loc *table.Tab
 	peer.adjRibIn = table.NewAdjRib(logger, rfs)
 	peer.rtmHandler = table.NewRouteTargetMembershipHandler()
 	peer.fsm.tcpAoKeyBinding.Store(tcpAo)
+	if conf.GracefulRestart.State.LocalRestarting && conf.Transport.Config.PassiveMode {
+		peer.localRestartDeadline = time.Now().Add(time.Duration(conf.GracefulRestart.Config.RouteSelectionDelayTime) * time.Second)
+	}
 	return peer
 }
 
@@ -376,23 +380,13 @@ func (peer *peer) localRestartEORWaitComplete() bool {
 	return true
 }
 
-// receivedAllEOR reports whether the restarting speaker has received EOR from
-// this peer for all negotiated GR address families. Per RFC 4724 Section 4.1,
-// a peer that does not advertise GR capability is excluded from the EOR wait.
-// A peer that has GR configured but has not yet reached ESTABLISHED is treated
-// as pending: its EOR has not been received and cannot be skipped.
-func (peer *peer) receivedAllEOR() bool {
-	if peer.fsm.state.Load() != bgp.BGP_FSM_ESTABLISHED {
-		// Session not yet established: if GR is configured for any family,
-		// we must wait -- the peer may still advertise GR capability in its OPEN.
-		for _, a := range peer.fsm.pConf.ReadOnly().AfiSafis {
-			if a.MpGracefulRestart.Config.Enabled {
-				return false
-			}
+func (peer *peer) hasConfiguredGRFamily() bool {
+	for _, a := range peer.fsm.pConf.ReadOnly().AfiSafis {
+		if a.MpGracefulRestart.Config.Enabled {
+			return true
 		}
-		return true
 	}
-	return peer.localRestartEORWaitComplete()
+	return false
 }
 
 func (peer *peer) configuredRFlist() []bgp.Family {
